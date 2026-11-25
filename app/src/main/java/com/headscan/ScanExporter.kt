@@ -25,19 +25,24 @@ object ScanExporter {
 
     class Entry(val fileName: String, val mime: String, val write: (OutputStream) -> Unit)
 
-    fun save(context: Context, result: ScanResult): Saved {
+    const val CHECK_NAME = "alignment_check.jpg"
+
+    fun save(context: Context, result: ScanResult, alignmentCheck: Bitmap? = null): Saved {
         val name = "HeadScan_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val texture = Bitmap.createBitmap(result.texture, result.textureSize, result.textureSize, Bitmap.Config.ARGB_8888)
         val writers = listOf(
             Entry(OBJ_NAME, "application/octet-stream") { out -> out.write(result.objText.toByteArray()) },
             Entry(MTL_NAME, "application/octet-stream") { out -> out.write(result.mtlText.toByteArray()) },
             Entry(TEXTURE_NAME, "image/png") { out -> texture.compress(Bitmap.CompressFormat.PNG, 100, out) },
-        )
+        ) + listOfNotNull(alignmentCheck?.let { bmp ->
+            Entry(CHECK_NAME, "image/jpeg") { out -> bmp.compress(Bitmap.CompressFormat.JPEG, 90, out) }
+        })
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) saveMediaStore(context, name, writers)
             else saveLegacy(context, name, writers)
         } finally {
             texture.recycle()
+            alignmentCheck?.recycle()
         }
     }
 

@@ -1,13 +1,13 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.1**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.2**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
 
 | Output | Value |
 |---|---|
-| Geometry | ~1500 triangles (head + neck, shoulders cut off) |
+| Geometry | Low: 1500 triangles, High: 3500 triangles (chosen on the start screen) |
 | Texture | 1024 × 1024 PNG |
 | Format | `head.obj` + `head.mtl` + `head_texture.png` |
 | Location | `Downloads/HeadScans/HeadScan_<date>_<time>/` (Share button also offered) |
@@ -21,7 +21,18 @@ Everything runs on the phone. No server, no account.
 * Google Play Services for AR (the app prompts to install it).
 * Android 7.0+.
 
-## How to scan
+## Two scan modes
+
+| Mode | Camera | Who holds the phone | Result |
+|---|---|---|---|
+| **Full head** | rear, ARCore Depth API | a friend walks around you | your real head, hair and neck shape |
+| **Selfie** | front, ARCore Augmented Faces | you | your real face merged onto a generic head + neck |
+
+Selfie mode can't see the back of your head, so the scalp and back are coloured from the hair seen above
+your forehead, and the rest from your average skin tone. It also saves `alignment_check.jpg`, a photo with the
+face mesh drawn on it in green, which shows whether the texture lined up.
+
+## How to scan (full head)
 
 The rear camera is used (ARCore depth does not work on the selfie camera), so **someone else holds the phone**
 while the person being scanned sits still.
@@ -31,6 +42,13 @@ while the person being scanned sits still.
 3. Walk slowly in a full circle around the head, keeping it centred. The ring fills in as angles are captured.
 4. Then raise the phone and look down at the top of the head from a few angles.
 5. Tap **Finish**. Processing takes roughly 10–40 seconds. The files are saved to `Downloads/HeadScans/...`.
+
+## How to scan (selfie)
+
+1. Choose **Selfie** on the start screen, hold the phone at arm's length and look at the screen.
+2. Tap **Start**, keep the phone still and slowly turn your head one way, then the other, then tilt your chin
+   up and down. The text tells you which angles are still missing.
+3. Tap **Finish**.
 
 Keep the three files in the same folder when you copy them, since the OBJ refers to the MTL and the MTL to the PNG.
 Units are metres, +Y is up and the face looks toward +Z (Blender: import with "Y up / -Z forward" defaults works).

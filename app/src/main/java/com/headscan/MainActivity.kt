@@ -18,6 +18,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.ProgressBar
+import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -33,6 +34,7 @@ import com.google.ar.core.Frame
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
+import java.util.EnumSet
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.ar.core.exceptions.UnavailableApkTooOldException
@@ -100,6 +102,13 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private var savedUris: List<Uri> = emptyList()
 
+    // Options (remembered between launches)
+    private lateinit var optionsPanel: View
+    private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
+    @Volatile private var selfieMode = false
+    private var targetTriangles = LOW_TRIANGLES
+    private lateinit var selfie: SelfieCapture
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -112,6 +121,22 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         secondaryButton = findViewById(R.id.secondary_button)
         progressBar = findViewById(R.id.progress)
         findViewById<TextView>(R.id.version_text).text = "v${BuildConfig.VERSION_NAME}"
+        optionsPanel = findViewById(R.id.options_panel)
+
+        selfieMode = prefs.getBoolean("selfie", false)
+        targetTriangles = prefs.getInt("triangles", LOW_TRIANGLES)
+        val modeGroup = findViewById<RadioGroup>(R.id.mode_group)
+        val qualityGroup = findViewById<RadioGroup>(R.id.quality_group)
+        modeGroup.check(if (selfieMode) R.id.mode_selfie else R.id.mode_rear)
+        qualityGroup.check(if (targetTriangles == HIGH_TRIANGLES) R.id.quality_high else R.id.quality_low)
+        modeGroup.setOnCheckedChangeListener { _, id ->
+            val newSelfie = id == R.id.mode_selfie
+            if (newSelfie != selfieMode) switchCamera(newSelfie)
+        }
+        qualityGroup.setOnCheckedChangeListener { _, id ->
+            targetTriangles = if (id == R.id.quality_high) HIGH_TRIANGLES else LOW_TRIANGLES
+            prefs.edit().putInt("triangles", targetTriangles).apply()
+        }
 
         surfaceView.preserveEGLContextOnPause = true
         surfaceView.setEGLContextClientVersion(2)
@@ -120,10 +145,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         surfaceView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
 
         workDir = File(cacheDir, "capture").apply { deleteRecursively(); mkdirs() }
+        selfie = SelfieCapture(workDir) { nv21, w, h, file -> writeJpeg(nv21, w, h, file) }
 
         actionButton.setOnClickListener {
             when (state) {
-                State.AIM -> { startRequested = true; showStatus("Measuring distance to the face…") }
+                State.AIM -> { startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Measuring distance to the face…") }
                 State.CAPTURING -> finishCapture()
                 State.DONE -> resetScan()
                 State.PROCESSING -> Unit
@@ -144,6 +170,24 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     override fun onResume() {
         super.onResume()
         if (state == State.PROCESSING || state == State.DONE) return
+        startArSession()
+    }
+
+    /** Switches between the rear (full head, depth) and front (selfie, face mesh) camera. */
+    private fun switchCamera(useSelfie: Boolean) {
+        surfaceView.onPause()
+        session?.pause()
+        session?.close()
+        session = null
+        selfieMode = useSelfie
+        prefs.edit().putBoolean("selfie", useSelfie).apply()
+        lastHint = ""
+        viewportChanged = true
+        actionButton.isEnabled = true
+        startArSession()
+    }
+
+    private fun startArSession() {
         if (session == null) {
             try {
                 if (ArCoreApk.getInstance().requestInstall(this, !installRequested) == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
@@ -154,21 +198,31 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
                     return
                 }
-                val s = Session(this)
-                if (!s.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                val s = if (selfieMode) Session(this, EnumSet.of(Session.Feature.FRONT_CAMERA)) else Session(this)
+                if (!selfieMode && !s.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                     s.close()
-                    showFatal("This phone does not support the ARCore Depth API, which the scanner needs.")
+                    showFatal("This phone does not support the ARCore Depth API, which the rear-camera scan needs. Try Selfie mode instead.")
                     return
                 }
-                chooseCameraConfig(s)
+                chooseCameraConfig(s, if (selfieMode) CameraConfig.FacingDirection.FRONT else CameraConfig.FacingDirection.BACK)
                 val config = Config(s).apply {
-                    depthMode = Config.DepthMode.AUTOMATIC
+                    if (selfieMode) {
+                        augmentedFaceMode = Config.AugmentedFaceMode.MESH3D
+                    } else {
+                        depthMode = Config.DepthMode.AUTOMATIC
+                        planeFindingMode = Config.PlaneFindingMode.DISABLED
+                    }
                     focusMode = Config.FocusMode.AUTO
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-                    planeFindingMode = Config.PlaneFindingMode.DISABLED
                     lightEstimationMode = Config.LightEstimationMode.DISABLED
                 }
-                s.configure(config)
+                try {
+                    s.configure(config)
+                } catch (e: Exception) {
+                    s.close()
+                    showFatal(if (selfieMode) "This phone doesn't support ARCore face tracking on the front camera." else "Could not configure AR: ${e.message}")
+                    return
+                }
                 session = s
             } catch (e: UnavailableUserDeclinedInstallationException) {
                 showFatal("Google Play Services for AR is required. Please install it and reopen the app."); return
@@ -217,8 +271,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     /** Prefer a depth-sensor (ToF) config when available, then the largest CPU image (sharper texture). */
-    private fun chooseCameraConfig(s: Session) {
-        val filter = CameraConfigFilter(s).setFacingDirection(CameraConfig.FacingDirection.BACK)
+    private fun chooseCameraConfig(s: Session, facing: CameraConfig.FacingDirection) {
+        val filter = CameraConfigFilter(s).setFacingDirection(facing)
         val configs = s.getSupportedCameraConfigs(filter)
         val best = configs
             .filter { it.imageSize.width <= 1920 }
@@ -255,6 +309,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         background.draw(frame)
 
         val camera = frame.camera
+        if (selfieMode) {
+            drawSelfieFrame(s, frame)
+            return
+        }
         if (camera.trackingState != TrackingState.TRACKING) {
             hint(trackingHint(camera.trackingFailureReason))
             return
@@ -268,6 +326,44 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
             State.CAPTURING -> maybeCaptureKeyframe(frame, camera)
             else -> Unit
+        }
+    }
+
+    private fun drawSelfieFrame(s: Session, frame: Frame) {
+        when (state) {
+            State.AIM -> {
+                val face = selfie.findFace(s)
+                if (startRequested) {
+                    startRequested = false
+                    if (face == null) { hint("No face found. Hold the phone at arm's length, face the screen, and tap Start again."); return }
+                    selfie.reset()
+                    state = State.CAPTURING
+                    runOnUiThread { enterCapturing() }
+                    hint(selfie.update(s, frame, force = true))
+                } else {
+                    hint(if (face == null) "Selfie mode: hold the phone at arm's length and look at the screen."
+                    else "Face found. Hold the phone still, then tap Start and slowly turn your head.\n\nSelfie mode captures your real face and puts it on a generic head and neck.")
+                }
+            }
+            State.CAPTURING -> {
+                val before = selfie.keyframes.size
+                hint(selfie.update(s, frame))
+                if (selfie.keyframes.size != before) {
+                    val snapshot = selfie.coverage.copyOf()
+                    val count = selfie.keyframes.size
+                    runOnUiThread {
+                        coverageView.update(snapshot, crosshair = false)
+                        actionButton.isEnabled = count >= SelfieCapture.MIN_KEYFRAMES
+                    }
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun writeJpeg(nv21: ByteArray, w: Int, h: Int, file: File) {
+        jpegWriter.execute {
+            FileOutputStream(file).use { YuvImage(nv21, ImageFormat.NV21, w, h, null).compressToJpeg(Rect(0, 0, w, h), 92, it) }
         }
     }
 
@@ -373,9 +469,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val colorIntr = ImageUtils.toIntrinsics(camera.imageIntrinsics)
 
         val file = File(workDir, "kf_%03d.jpg".format(keyframes.size))
-        jpegWriter.execute {
-            FileOutputStream(file).use { YuvImage(nv21, ImageFormat.NV21, cw, ch, null).compressToJpeg(Rect(0, 0, cw, ch), 92, it) }
-        }
+        writeJpeg(nv21, cw, ch, file)
         keyframes.add(Keyframe(camToWorld, worldToCam, depth, dw, dh, depthIntr, colorIntr, file.absolutePath))
 
         val dx = camToWorld[12] - c[0]; val dy = camToWorld[13] - c[1]; val dz = camToWorld[14] - c[2]
@@ -400,15 +494,21 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     // ---------------------------------------------------------------- processing
 
     private fun finishCapture() {
-        if (keyframes.size < MIN_KEYFRAMES) {
-            Toast.makeText(this, "Capture at least $MIN_KEYFRAMES views first.", Toast.LENGTH_SHORT).show()
+        val minFrames = if (selfieMode) SelfieCapture.MIN_KEYFRAMES else MIN_KEYFRAMES
+        val have = if (selfieMode) selfie.keyframes.size else keyframes.size
+        if (have < minFrames) {
+            Toast.makeText(this, "Capture at least $minFrames views first.", Toast.LENGTH_SHORT).show()
             return
         }
         state = State.PROCESSING
         surfaceView.onPause()   // blocks until the GL thread is paused, so the keyframe list is stable
         session?.pause()
-        val frames = ArrayList(keyframes)
-        val center = headCenter!!.copyOf()
+        val isSelfie = selfieMode
+        val frames = ArrayList(if (isSelfie) selfie.keyframes else keyframes)
+        val center = if (isSelfie) FloatArray(3) else headCenter!!.copyOf()
+        val faceVerts = if (isSelfie) selfie.averagedVertices() else null
+        val faceTris = if (isSelfie) selfie.triangles else null
+        val settings = ScanSettings(targetTriangles = targetTriangles)
         enterProcessing()
 
         lifecycleScope.launch(Dispatchers.Default) {
@@ -421,10 +521,19 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
                     RgbImage(bmp.width, bmp.height, px).also { bmp.recycle() }
                 }
-                val result = HeadScanPipeline(ScanSettings()).run(
-                    frames, center, colorSource, ScanExporter.TEXTURE_NAME, ScanExporter.MTL_NAME,
-                ) { msg, p -> runOnUiThread { showStatus("Building 3D model…\n$msg"); progressBar.progress = (p * 100).toInt() } }
-                val saved = ScanExporter.save(this@MainActivity, result)
+                val onProgress = { msg: String, p: Float ->
+                    runOnUiThread { showStatus("Building 3D model…\n$msg"); progressBar.progress = (p * 100).toInt() }
+                }
+                val pipeline = HeadScanPipeline(settings)
+                val result = if (isSelfie) {
+                    if (faceVerts == null || faceTris == null) throw ScanException("No face mesh was captured.")
+                    pipeline.runSelfie(frames, faceVerts, faceTris, colorSource, ScanExporter.TEXTURE_NAME, ScanExporter.MTL_NAME, onProgress)
+                } else {
+                    pipeline.run(frames, center, colorSource, ScanExporter.TEXTURE_NAME, ScanExporter.MTL_NAME, onProgress)
+                }
+                // Selfie mode: also save a photo with the face mesh drawn on it, to check the texture lines up.
+                val check = if (isSelfie && faceVerts != null) AlignmentCheck.draw(frames.first(), faceVerts) else null
+                val saved = ScanExporter.save(this@MainActivity, result, check)
                 withContext(Dispatchers.Main) {
                     savedUris = saved.uris
                     enterDone("Saved ${result.triangleCount} triangles, ${result.textureSize}×${result.textureSize} texture.\n\n" +
@@ -454,6 +563,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private fun enterAim() {
         state = State.AIM
+        optionsPanel.visibility = View.VISIBLE
         progressBar.visibility = View.GONE
         secondaryButton.visibility = View.GONE
         actionButton.text = "Start"
@@ -462,14 +572,16 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun enterCapturing() {
+        optionsPanel.visibility = View.GONE
         actionButton.text = "Finish"
         actionButton.isEnabled = false
         secondaryButton.text = "Cancel"
         secondaryButton.visibility = View.VISIBLE
-        coverageView.update(coverage.copyOf(), crosshair = true)
+        coverageView.update(if (selfieMode) selfie.coverage.copyOf() else coverage.copyOf(), crosshair = !selfieMode)
     }
 
     private fun enterProcessing() {
+        optionsPanel.visibility = View.GONE
         actionButton.isEnabled = false
         secondaryButton.visibility = View.GONE
         progressBar.visibility = View.VISIBLE
@@ -479,6 +591,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun enterDone(message: String) {
+        optionsPanel.visibility = View.GONE
         state = State.DONE
         progressBar.visibility = View.GONE
         actionButton.text = "New scan"
@@ -492,6 +605,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val wasRunning = state == State.CAPTURING || state == State.AIM
         if (wasRunning) surfaceView.onPause()
         keyframes.clear(); keyframeDirs.clear(); coverage.fill(false)
+        selfie.reset()
         headCenter = null
         workDir.listFiles()?.forEach { it.delete() }
         lastHint = ""
@@ -528,5 +642,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val MIN_INTERVAL_MS = 250L
         private const val MAX_KEYFRAMES = 60
         private const val MIN_KEYFRAMES = 8
+        private const val LOW_TRIANGLES = 1500
+        private const val HIGH_TRIANGLES = 3500
     }
 }

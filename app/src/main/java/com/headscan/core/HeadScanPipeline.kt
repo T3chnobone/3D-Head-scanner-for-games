@@ -63,6 +63,60 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             vol.integrate(kf)
         }
 
+        val front = keyframes.first()
+        var fx = front.camX - cx; var fz = front.camZ - cz
+        val fl = sqrt(fx * fx + fz * fz)
+        if (fl > 1e-6f) { fx /= fl; fz /= fl } else { fx = 0f; fz = 1f }
+        return finishMesh(vol, keyframes, cx, cy, cz, atan2(fx, fz), colorSource, textureFileName, mtlFileName, null, crop = true, progress)
+    }
+
+    /**
+     * Selfie mode: [keyframes] must already be expressed in the face frame (+Y up, +Z out of the face).
+     * [faceVertices]/[faceTriangles] is the averaged ARCore face mesh in that same frame.
+     */
+    fun runSelfie(
+        keyframes: List<Keyframe>,
+        faceVertices: FloatArray,
+        faceTriangles: IntArray,
+        colorSource: ColorSource,
+        textureFileName: String,
+        mtlFileName: String,
+        progress: (String, Float) -> Unit = { _, _ -> },
+    ): ScanResult {
+        if (keyframes.size < 3) throw ScanException("Need at least 3 captured views, got ${keyframes.size}.")
+        progress("Fitting head to your face", 0.05f)
+        val head = SelfieHead(faceVertices, faceTriangles)
+        val vol = head.buildVolume(0.003f, 0.012f)
+        val hair = HairFill(head)
+        return finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource,
+            textureFileName, mtlFileName, hair, crop = false, progress, smoothing = 3)
+    }
+
+    /** Picks hair / skin colours for parts of the generic head that no photo saw. */
+    private class HairFill(val head: SelfieHead) {
+        var hair = 0xFF3A2A1E.toInt()
+        var skin = 0xFFC89F86.toInt()
+        fun prepare(baker: TextureBaker) {
+            baker.meanSeenColor { x, y, z -> y < head.maxY - 0.03f && y > head.minY + 0.03f && z > head.headCz }?.let { skin = it }
+            baker.meanSeenColor(30) { _, y, z -> y > head.maxY + 0.005f && z > head.headCz }?.let { hair = it }
+        }
+        fun color(x: Float, y: Float, z: Float) = if (head.isHairRegion(x, y, z)) hair else skin
+    }
+
+    private fun finishMesh(
+        vol: TsdfVolume,
+        keyframes: List<Keyframe>,
+        cx: Float, cy: Float, cz: Float,
+        frontAngle: Float,
+        colorSource: ColorSource,
+        textureFileName: String,
+        mtlFileName: String,
+        hairFill: HairFill?,
+        crop: Boolean,
+        progress: (String, Float) -> Unit,
+        smoothing: Int = settings.smoothingIterations,
+    ): ScanResult {
+        val s = settings
         // 2. Surface extraction and clean-up
         progress("Extracting surface", 0.36f)
         var mesh = SurfaceNets.extract(vol, s.minWeight)
@@ -71,7 +125,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         val r2 = s.neckRadius * s.neckRadius
         val collarTop = cy - s.collarStart
         val src = mesh
-        mesh = MeshOps.filterFaces(src) { f ->
+        if (crop) mesh = MeshOps.filterFaces(src) { f ->
             var keep = true
             for (c in 0 until 3) {
                 val v = src.faces[3 * f + c]
@@ -85,7 +139,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         mesh = MeshOps.largestComponent(mesh)
         if (mesh.faceCount < s.targetTriangles / 4) throw ScanException("Scan too sparse (${mesh.faceCount} faces). Capture more angles.")
         progress("Smoothing", 0.42f)
-        MeshOps.taubinSmooth(mesh, s.smoothingIterations)
+        MeshOps.taubinSmooth(mesh, smoothing)
 
         // 3. Decimation
         progress("Reducing to ${s.targetTriangles} triangles", 0.45f)
@@ -101,15 +155,12 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             progress("Projecting photo ${i + 1}/${keyframes.size}", 0.55f + 0.4f * i / keyframes.size)
             baker.addView(kf, colorSource.load(kf))
         }
-        val texture = baker.finish()
+        hairFill?.prepare(baker)
+        val texture = if (hairFill != null) baker.finish { x, y, z -> hairFill.color(x, y, z) } else baker.finish()
 
         // 5. Move into a head-centred frame, face toward +Z, and write OBJ.
         progress("Writing OBJ", 0.97f)
-        val front = keyframes.first()
-        var fx = front.camX - cx; var fz = front.camZ - cz
-        val fl = sqrt(fx * fx + fz * fz)
-        if (fl > 1e-6f) { fx /= fl; fz /= fl } else { fx = 0f; fz = 1f }
-        MeshOps.transformToHeadFrame(mesh, cx, cy, cz, atan2(fx, fz))
+        MeshOps.transformToHeadFrame(mesh, cx, cy, cz, frontAngle)
         val outNormals = MeshOps.vertexNormals(mesh)
         val obj = ObjWriter.obj(mesh, outNormals, atlas, mtlFileName, MATERIAL)
         val mtl = ObjWriter.mtl(MATERIAL, textureFileName)

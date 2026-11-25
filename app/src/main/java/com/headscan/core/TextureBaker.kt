@@ -151,8 +151,22 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
         }
     }
 
-    /** Produces the final ARGB texture (row 0 = top). Unseen texels get the mean colour, gaps are dilated. */
-    fun finish(): IntArray {
+    /** Average colour (ARGB) of the texels seen in photos whose position matches [where], or null if fewer than [minCount]. */
+    fun meanSeenColor(minCount: Int = 50, where: (Float, Float, Float) -> Boolean): Int? {
+        var r = 0.0; var g = 0.0; var b = 0.0; var n = 0
+        for (t in texelIndex.indices) {
+            if (accW[t] <= 0f || !where(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])) continue
+            r += accR[t] / accW[t]; g += accG[t] / accW[t]; b += accB[t] / accW[t]; n++
+        }
+        if (n < minCount) return null
+        return (0xFF shl 24) or ((r / n).toInt().coerceIn(0, 255) shl 16) or ((g / n).toInt().coerceIn(0, 255) shl 8) or (b / n).toInt().coerceIn(0, 255)
+    }
+
+    /**
+     * Produces the final ARGB texture (row 0 = top). Unseen texels get [fillColor] at their position
+     * (or the mean seen colour), gaps are dilated.
+     */
+    fun finish(fillColor: ((Float, Float, Float) -> Int)? = null): IntArray {
         val out = IntArray(size * size)
         val filled = BooleanArray(size * size)
         var sr = 0.0; var sg = 0.0; var sb = 0.0; var sn = 0
@@ -169,6 +183,9 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
                 r = (accR[t] / accW[t]).toInt().coerceIn(0, 255)
                 g = (accG[t] / accW[t]).toInt().coerceIn(0, 255)
                 b = (accB[t] / accW[t]).toInt().coerceIn(0, 255)
+            } else if (fillColor != null) {
+                val c = fillColor(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])
+                r = (c shr 16) and 255; g = (c shr 8) and 255; b = c and 255
             } else { r = meanR; g = meanG; b = meanB }
             out[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
             filled[i] = true
