@@ -9,7 +9,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Hair added to the generic head in Selfie mode. */
-enum class HairStyle { BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
+enum class HairStyle { SWEPT, BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
 
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
@@ -222,6 +222,7 @@ class SelfieHead(
             }
             HairStyle.BOB -> 0.009f + 0.008f * smoothstep(0.3f, -0.5f, u)
             HairStyle.BUN -> 0.005f
+            HairStyle.SWEPT -> 0.006f + 0.010f * smoothstep(0.2f, 0.9f, u)   // under-layer beneath the locks
             HairStyle.BUZZ -> 0f
         }
         return t * cov
@@ -251,6 +252,10 @@ class SelfieHead(
 
     /** 0..1 hair colour amount for texturing (scalp coverage, or 1 on bob / bun shapes). */
     fun hairColorAmount(x: Float, y: Float, z: Float): Float {
+        if (locks.isNotEmpty()) {
+            val on = lockCover(x, y, z)
+            if (on > 0f) return max(on, scalpCoverage(x, y, z))
+        }
         if (extraHairSdf(x, y, z) < 0.004f && genericSdf(x, y, z) > 0.003f) return 1f - faceMask(x, y, z)
         val c = scalpCoverage(x, y, z)
         return when (hairStyle) {
@@ -275,6 +280,13 @@ class SelfieHead(
 
     /** Signed distance of the personalised head: generic head with the real face surface merged in front. */
     fun sdf(x: Float, y: Float, z: Float): Float {
+        val base = headAndFace(x, y, z)
+        if (locks.isEmpty()) return base
+        // Locks lie on top of everything, so a fringe can fall over the upper forehead.
+        return smin(base, locksSdf(x, y, z), 0.0025f)
+    }
+
+    private fun headAndFace(x: Float, y: Float, z: Float): Float {
         val g = headWithHair(x, y, z)
         val fi = gx(x); val fj = gy(y)
         val i = fi.toInt(); val j = fj.toInt()
@@ -290,9 +302,173 @@ class SelfieHead(
         return if (z > zf) w * fz + (1 - w) * union else union
     }
 
+
+    // ------------------------------------------------------------------ sculpted locks (SWEPT)
+
+    /** One clump of hair: a flattened, tapering tube along a curve over the scalp, ending in a point. */
+    private class Lock(val p: FloatArray, val r: FloatArray, val n: FloatArray, val cx: Float, val cy: Float, val cz: Float, val bound: Float)
+
+    private class LockHit(var d: Float = 1f, var across: Float = 0f, var along: Float = 0f, var lock: Int = -1)
+
+    private val locks: List<Lock> by lazy { if (hairStyle == HairStyle.SWEPT) buildSweptLocks() else emptyList() }
+
+    /** Point on the generic skull in unit-sphere direction (dx,dy,dz), lifted [lift] m along the surface normal. */
+    private fun scalpPoint(dx: Float, dy: Float, dz: Float, lift: Float, out: FloatArray, o: Int, nOut: FloatArray) {
+        val l = sqrt(dx * dx + dy * dy + dz * dz)
+        val ux = dx / l; val uy = dy / l; val uz = dz / l
+        var nx = ux / rx; var ny = uy / ry; var nz = uz / rz
+        val nl = sqrt(nx * nx + ny * ny + nz * nz)
+        nx /= nl; ny /= nl; nz /= nl
+        out[o] = headCx + ux * rx + nx * lift
+        out[o + 1] = headCy + uy * ry + ny * lift
+        out[o + 2] = headCz + uz * rz + nz * lift
+        nOut[o] = nx; nOut[o + 1] = ny; nOut[o + 2] = nz
+    }
+
+    /**
+     * A lock from unit-sphere direction [a] to [b] (great-circle path), with the tip flicking [flick] m off the
+     * scalp. Width [w] (m) at its fullest; it tapers to a point at the tip and narrows at the root.
+     */
+    private fun lock(a: FloatArray, b: FloatArray, w: Float, lift: Float = 0.007f, flick: Float = 0.004f): Lock {
+        val steps = 9
+        val p = FloatArray(steps * 3); val n = FloatArray(steps * 3); val r = FloatArray(steps)
+        val al = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); val bl = sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2])
+        val ax = a[0] / al; val ay = a[1] / al; val az = a[2] / al
+        val bx = b[0] / bl; val by = b[1] / bl; val bz = b[2] / bl
+        val om = kotlin.math.acos((ax * bx + ay * by + az * bz).coerceIn(-1f, 1f)).coerceAtLeast(1e-4f)
+        for (i in 0 until steps) {
+            val t = i / (steps - 1f)
+            val s0 = kotlin.math.sin((1 - t) * om) / kotlin.math.sin(om); val s1 = kotlin.math.sin(t * om) / kotlin.math.sin(om)
+            val h = lift + 0.004f * kotlin.math.sin(Math.PI.toFloat() * t) + flick * t * t * t
+            scalpPoint(s0 * ax + s1 * bx, s0 * ay + s1 * by, s0 * az + s1 * bz, h, p, 3 * i, n)
+            // fullest a third of the way along, a point at the tip
+            r[i] = w * 0.5f * (0.55f + 0.45f * kotlin.math.sin(Math.PI.toFloat() * min(1f, t * 1.5f))) * (1f - t * t * t).coerceAtLeast(0f)
+        }
+        var cx = 0f; var cy = 0f; var cz = 0f
+        for (i in 0 until steps) { cx += p[3 * i]; cy += p[3 * i + 1]; cz += p[3 * i + 2] }
+        cx /= steps; cy /= steps; cz /= steps
+        var bound = 0f
+        for (i in 0 until steps) {
+            val dx = p[3 * i] - cx; val dy = p[3 * i + 1] - cy; val dz = p[3 * i + 2] - cz
+            bound = max(bound, sqrt(dx * dx + dy * dy + dz * dz) + r[i])
+        }
+        return Lock(p, r, n, cx, cy, cz, bound)
+    }
+
+    /** Unit-sphere direction for a point on the skull with height u (-1..1), around-angle [deg] (0 = front, +90 = +X side). */
+    private fun dir(u: Float, deg: Float): FloatArray {
+        val c = sqrt((1f - u * u).coerceAtLeast(0f))
+        val a = Math.toRadians(deg.toDouble())
+        return floatArrayOf(c * kotlin.math.sin(a).toFloat(), u, c * kotlin.math.cos(a).toFloat())
+    }
+
+    /**
+     * Game-style swept cut: chunky clumps radiate from a crown whorl at the back of the head; the front ones
+     * sweep forward and across into a pointed side fringe, the side ones comb down over the ears and the back
+     * ones fall to the nape.
+     */
+    private fun buildSweptLocks(): List<Lock> {
+        val out = ArrayList<Lock>()
+        val crown = dir(0.72f, 160f)              // whorl: high at the back, a little to +X
+        // Lowest a fringe tip may reach: above the brows.
+        val tipU = ((maxY - 0.03f - headCy) / ry).coerceIn(0.2f, 0.8f)
+        val fringeU = ((maxY - 0.005f - headCy) / ry).coerceIn(0.3f, 0.9f)
+        // Fringe: big clumps sweeping forward and across to -X, pointed tips hanging over the forehead
+        // at staggered lengths, the outermost flicking out past the temple.
+        // Each starts high on the right of the head and ends lower and further left, so the fringe reads
+        // as one diagonal swoop rather than straight bangs.
+        val fringe = listOf(
+            floatArrayOf(60f, 10f, fringeU + 0.06f, 0.5f), floatArrayOf(40f, -12f, tipU + 0.03f, 1f),
+            floatArrayOf(18f, -35f, tipU - 0.02f, 1.2f), floatArrayOf(-5f, -58f, tipU + 0.01f, 1.4f),
+            floatArrayOf(-28f, -82f, tipU - 0.14f, 2f),
+        )
+        for ((k, f) in fringe.withIndex()) {
+            val start = dir(0.9f - 0.03f * (k % 2), f[0] + 60f)
+            out.add(lock(start, dir(f[2], f[1]), w = 0.055f, lift = 0.013f, flick = 0.006f * f[3]))
+        }
+        // Top: big clumps from the crown arching forward, giving the cut its volume.
+        for ((k, deg) in listOf(60f, 5f, -50f).withIndex()) {
+            out.add(lock(crown, dir(0.66f - 0.05f * (k % 2), deg), w = 0.066f, lift = 0.019f, flick = 0.003f))
+        }
+        // Sides: combed down and back over the ears, pointed tips.
+        for (side in listOf(-1f, 1f)) for ((k, a) in listOf(65f, 95f, 125f).withIndex()) {
+            val start = dir(0.72f, side * (a - 15f))
+            out.add(lock(start, dir(-0.22f - 0.08f * (k % 2), side * (a + 20f)), w = 0.058f, lift = 0.009f, flick = 0.008f))
+        }
+        // Back: falling from the whorl to the nape.
+        for ((k, a) in listOf(-155f, 180f, 155f, 130f, -130f, 105f, -105f).withIndex()) {
+            out.add(lock(crown, dir(-0.48f - 0.08f * (k % 2), a), w = 0.062f, lift = 0.009f, flick = 0.006f))
+        }
+        return out
+    }
+
+    /** Signed distance to the union of locks; fills [hit] with the nearest lock's local coordinates if given. */
+    private fun locksSdf(x: Float, y: Float, z: Float, hit: LockHit? = null): Float {
+        var best = 1f
+        for ((li, lk) in locks.withIndex()) {
+            val bx = x - lk.cx; val by = y - lk.cy; val bz = z - lk.cz
+            if (sqrt(bx * bx + by * by + bz * bz) - lk.bound > min(best, 0.02f)) continue
+            val p = lk.p
+            val segs = lk.r.size - 1
+            for (i in 0 until segs) {
+                val o = 3 * i
+                val ex = p[o + 3] - p[o]; val ey = p[o + 4] - p[o + 1]; val ez = p[o + 5] - p[o + 2]
+                val vx = x - p[o]; val vy = y - p[o + 1]; val vz = z - p[o + 2]
+                val ee = ex * ex + ey * ey + ez * ez
+                val t = ((vx * ex + vy * ey + vz * ez) / ee).coerceIn(0f, 1f)
+                val qx = vx - t * ex; val qy = vy - t * ey; val qz = vz - t * ez
+                val rad = lk.r[i] + (lk.r[i + 1] - lk.r[i]) * t
+                if (rad < 1e-4f) continue
+                val nx = lk.n[o] + (lk.n[o + 3] - lk.n[o]) * t
+                val ny = lk.n[o + 1] + (lk.n[o + 4] - lk.n[o + 1]) * t
+                val nz = lk.n[o + 2] + (lk.n[o + 5] - lk.n[o + 2]) * t
+                val vr = qx * nx + qy * ny + qz * nz                      // off-scalp component
+                val tx = qx - vr * nx; val ty = qy - vr * ny; val tz = qz - vr * nz
+                val vt = sqrt(tx * tx + ty * ty + tz * tz)                // across the lock
+                val k = 0.36f                                                // thickness / width (flat clumps)
+                val d = (sqrt((vt / rad) * (vt / rad) + (vr / (k * rad)) * (vr / (k * rad))) - 1f) * k * rad
+                if (d < best) {
+                    best = d
+                    if (hit != null) {
+                        // sign of "across": which side of the lock centre line
+                        // across = offset along the lock's binormal only, so strands run parallel to the lock
+                        val sx = ey * nz - ez * ny; val sy = ez * nx - ex * nz; val sz = ex * ny - ey * nx
+                        val sl = sqrt(sx * sx + sy * sy + sz * sz).coerceAtLeast(1e-9f)
+                        hit.d = d; hit.across = (qx * sx + qy * sy + qz * sz) / sl / rad; hit.along = (i + t) / segs; hit.lock = li
+                    }
+                }
+            }
+        }
+        return best
+    }
+
+    /** 0..1: how much this surface point is on a lock (for hair colour). */
+    fun lockCover(x: Float, y: Float, z: Float): Float {
+        if (locks.isEmpty()) return 0f
+        val d = locksSdf(x, y, z)
+        return 1f - smoothstep(0.0015f, 0.004f, d)
+    }
+
+    /**
+     * Shading for painted hair on a lock (around 1): fine strands running along the lock, darker towards its
+     * edges so clumps read separately. Null if the point is not on a lock.
+     */
+    fun lockShade(x: Float, y: Float, z: Float): Float? {
+        if (locks.isEmpty()) return null
+        val h = LockHit()
+        locksSdf(x, y, z, h)
+        if (h.lock < 0 || h.d > 0.004f) return null
+        val a = h.across.coerceIn(-1f, 1f)
+        // Fine strands along the lock, a soft sheen down its middle, darker edges so each clump reads.
+        val strands = kotlin.math.sin(a * 37f + h.lock * 1.7f) * 0.6f + kotlin.math.sin(a * 71f + h.lock * 0.9f) * 0.4f
+        val sheen = 1f + 0.18f * (1f - a * a) * smoothstep(0.1f, 0.5f, h.along) * (1f - smoothstep(0.75f, 1f, h.along))
+        val edge = 1f - 0.45f * smoothstep(0.5f, 1f, abs(a))
+        return (0.93f + 0.07f * strands) * sheen * edge
+    }
+
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
-        val pad = when (hairStyle) { HairStyle.BUZZ -> 0.02f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
+        val pad = when (hairStyle) { HairStyle.BUZZ -> 0.02f; HairStyle.SWEPT -> 0.06f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
         val x0 = min(headCx - rx, minX) - pad; val x1 = max(headCx + rx, maxX) + pad
         val y0 = neckBottom; val y1 = max(headCy + ry, maxY) + pad
         val z0 = headCz - rz - pad; val z1 = max(noseZ, headCz + rz) + pad

@@ -202,6 +202,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
                 strands = kotlin.math.sin(x * 650f) * kotlin.math.sin(y * 650f + 1.3f) * kotlin.math.sin(z * 650f + 2.1f) * 1.6f
             }
             val n = kotlin.math.sin(x * 371f + y * 533f + z * 197f) * 0.5f     // cheap variation
+            head.lockShade(x, y, z)?.let { return scale(hair, it * (0.97f + 0.03f * n)) }
             return scale(hair, 0.9f + 0.12f * strands + 0.05f * n)
         }
 
@@ -214,7 +215,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
 
         fun override(x: Float, y: Float, z: Float, seen: Int?): Int {
             val painted = color(x, y, z)
-            val fm = head.faceMask(x, y, z)
+            val fm = head.faceMask(x, y, z) * (1f - head.lockCover(x, y, z))
             return if (fm > 0f && seen != null) mix(painted, seen, fm) else painted
         }
     }

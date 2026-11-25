@@ -241,6 +241,16 @@ class SyntheticScanTest {
     }
 
     @Test
+    fun sweptLocks() {
+        skinMode = true
+        try {
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_1500")
+            selfie(3500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_3500")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_ginger", recolor = 18f to 0.25f)
+        } finally { skinMode = false; images.clear() }
+    }
+
+    @Test
     fun scaledResult() {
         val m = Mesh(floatArrayOf(0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f, 0f), intArrayOf(0, 1, 2))
         val r = ScanResult(m, MeshOps.vertexNormals(m), false, UvAtlas(1, 64), IntArray(64 * 64), 64)

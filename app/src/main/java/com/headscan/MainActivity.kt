@@ -840,6 +840,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun hairLabel(h: HairStyle) = when (h) {
+        HairStyle.SWEPT -> "Swept locks"
         HairStyle.BUZZ -> "Buzz cut"
         HairStyle.CREW_CUT -> "Crew cut"
         HairStyle.SHORT -> "Short hair"

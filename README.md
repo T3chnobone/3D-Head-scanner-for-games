@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.10**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.11**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -15,7 +15,7 @@ low-poly 3D model:
 
 After processing, a 3D preview appears (drag to spin). A **Size** slider (50–150%) scales the whole model. In Selfie mode you can also move **your face on the head** (±2 cm sideways, ±3 cm up/down, ±2 cm in/out) and change the **hairstyle**, then tap **Apply changes** to rebuild the head around your face. Tap **Save** to name and save it, or **Discard**.
 
-In Selfie mode you can also pick a hairstyle for the generic head: **Buzz cut**, **Crew cut**, **Short hair**, **Side parting**, **Flat top**, **Mohawk**, **Afro**, **Bob** or **Bun**. Two sliders at the side of the preview change the hair **colour** (natural, or anywhere on the rainbow) and **tone** (dark to light), live. Hair is grown out of the scalp as part of the one mesh, so the triangle limit (1500 / 3500) always includes it. The head and neck skin tone is measured from your cheeks and forehead, and the hair colour from just above your forehead.
+In Selfie mode you can also pick a hairstyle for the generic head: **Swept locks** (chunky, pointed game-style clumps from a crown whorl with a diagonal side fringe), **Buzz cut**, **Crew cut**, **Short hair**, **Side parting**, **Flat top**, **Mohawk**, **Afro**, **Bob** or **Bun**. Two sliders at the side of the preview change the hair **colour** (natural, or anywhere on the rainbow) and **tone** (dark to light), live. Hair is grown out of the scalp as part of the one mesh, so the triangle limit (1500 / 3500) always includes it. The head and neck skin tone is measured from your cheeks and forehead, and the hair colour from just above your forehead.
 
 Everything runs on the phone. No server, no account.
 
