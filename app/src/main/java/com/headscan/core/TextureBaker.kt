@@ -117,15 +117,23 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
 
     /**
      * Adds one keyframe's contribution.
+     *
+     * Each texel ends up dominated by the single best photo for it: the score combines how front-on the view is,
+     * how many image pixels land on the surface there, the photo's relative sharpness ([quality], 0..1) and its
+     * [Keyframe.priority]. The score is raised to a high power, so the best view wins outright and photos only
+     * blend where their scores are close (a narrow, soft seam) instead of averaging everything into a blur.
+     *
      * @param occlusionTolerance metres a point may lie behind the measured depth and still count as visible.
      */
-    fun addView(kf: Keyframe, image: RgbImage, occlusionTolerance: Float = 0.03f, minCos: Float = 0.2f) {
+    fun addView(kf: Keyframe, image: RgbImage, occlusionTolerance: Float = 0.03f, minCos: Float = 0.2f, quality: Float = 1f) {
         val m = kf.worldToCam
         val ci = kf.colorIntrinsics.scaledTo(image.width, image.height)
         val di = kf.depthIntrinsics
         val camX = kf.camX; val camY = kf.camY; val camZ = kf.camZ
         val w = image.width; val h = image.height
         val border = 0.04f * min(w, h)
+        val focal = 0.5f * (kotlin.math.abs(ci.fx) + kotlin.math.abs(ci.fy))
+        val viewScore = quality.coerceIn(0.02f, 1f) * kf.priority
         IntStream.range(0, texelIndex.size).parallel().forEach { t ->
             val px = texelPos[3 * t]; val py = texelPos[3 * t + 1]; val pz = texelPos[3 * t + 2]
             var vx = camX - px; var vy = camY - py; var vz = camZ - pz
@@ -148,12 +156,17 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
             val v = ci.cy - ci.fy * cy / z
             val rgb = scratch.get()!!
             if (!image.sample(u, v, rgb)) return@forEach
-            // Prefer frontal views and pixels away from the image border.
+            // Prefer pixels away from the image border.
             val edge = min(min(u, w - u), min(v, h - v))
             val edgeW = if (edge < border) max(0.05f, edge / border) else 1f
-            val c2 = cos * cos
-            var wt = c2 * c2 * c2 * edgeW
-            if (d == 0f) wt *= 0.3f
+            // Image pixels per metre of surface here; beyond the texture's own density it no longer helps.
+            val density = min(1f, focal * cos / z / TEXEL_DENSITY)
+            val score = cos * sqrt(density) * viewScore
+            val s2 = score * score
+            val s4 = s2 * s2
+            var wt = s4 * s4 * s4 * edgeW      // score^12
+            if (d == 0f && kf.depthWidth > 1) wt *= 0.3f
+            wt = max(wt, 1e-30f)
             accR[t] += rgb[0] * wt; accG[t] += rgb[1] * wt; accB[t] += rgb[2] * wt; accW[t] += wt
         }
     }
@@ -277,6 +290,20 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
             System.arraycopy(next, 0, has, 0, has.size)
         }
         return out
+    }
+
+    companion object {
+        /** Image pixels per metre of surface at which a photo stops getting extra credit for resolution. */
+        const val TEXEL_DENSITY = 2600f
+
+        /** Relative quality (0..1] of each keyframe from its blur score, for [addView]. */
+        fun qualities(keyframes: List<Keyframe>): FloatArray {
+            val best = keyframes.maxOfOrNull { it.sharpness } ?: 0f
+            return FloatArray(keyframes.size) { i ->
+                val s = keyframes[i].sharpness
+                if (best <= 0f || s <= 0f) 1f else sqrt(s / best).coerceIn(0.05f, 1f)
+            }
+        }
     }
 
     private fun dilate(img: IntArray, filled: BooleanArray, passes: Int) {

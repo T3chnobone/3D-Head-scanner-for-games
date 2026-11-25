@@ -93,7 +93,7 @@ class SelfieCapture(private val workDir: File, private val saveJpeg: (ByteArray,
         if (!sideB) missing.add("turn it the other way")
         if (!up) missing.add("tilt your chin up")
         if (!down) missing.add("tilt your chin down")
-        if (missing.isEmpty()) sb.append("All angles captured. Tap Finish.")
+        if (missing.isEmpty()) sb.append("All angles captured. Look straight at the screen and tap Finish – a full-resolution photo is taken then.")
         else sb.append("Keep the phone still and slowly ").append(missing.joinToString(", then ")).append('.')
         return sb.toString()
     }
@@ -127,7 +127,8 @@ class SelfieCapture(private val workDir: File, private val saveJpeg: (ByteArray,
         val file = File(workDir, "selfie_%03d.jpg".format(keyframes.size))
         saveJpeg(nv21, w, h, file)
         // No depth on the front camera: a 1x1 empty depth map disables the occlusion test.
-        keyframes.add(Keyframe(camToFace, faceToCam, ShortArray(1), 1, 1, colorIntr.scaledTo(1, 1), colorIntr, file.absolutePath))
+        keyframes.add(Keyframe(camToFace, faceToCam, ShortArray(1), 1, 1, colorIntr.scaledTo(1, 1), colorIntr, file.absolutePath,
+            sharpness = com.headscan.core.Sharpness.of(nv21, w, h)))
         return true
     }
 

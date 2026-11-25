@@ -42,6 +42,10 @@ class Keyframe(
     val colorIntrinsics: Intrinsics,
     /** Opaque reference used by a [ColorSource] to load the colour image (e.g. a JPEG path). */
     val colorRef: String,
+    /** Blur score of the photo (see [Sharpness]); 0 = unknown. Higher = sharper. */
+    val sharpness: Float = 0f,
+    /** Extra preference for this photo when texturing (e.g. 1.1 for the full-resolution detail photo). */
+    val priority: Float = 1f,
 ) {
     val camX get() = camToWorld[12]
     val camY get() = camToWorld[13]

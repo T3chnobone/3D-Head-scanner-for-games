@@ -57,6 +57,7 @@ import com.headscan.core.Keyframe
 import com.headscan.core.RgbImage
 import com.headscan.core.ScanException
 import com.headscan.core.ScanSettings
+import com.headscan.core.Sharpness
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -96,6 +97,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     @Volatile private var state = State.AIM
     @Volatile private var startRequested = false
+    /** Set when Finish is tapped: the GL thread takes one last tracked frame to line the detail photo up with. */
+    private val finishRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var arCameraId: String? = null
 
     // Capture data (touched on the GL thread while capturing).
     private val keyframes = ArrayList<Keyframe>()
@@ -202,7 +206,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         actionButton.setOnClickListener {
             when (state) {
                 State.AIM -> { startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Measuring distance to the face…") }
-                State.CAPTURING -> finishCapture()
+                State.CAPTURING -> requestFinish()
                 State.PREVIEW -> askNameAndSave()
                 State.DONE -> resetScan()
                 State.PROCESSING -> Unit
@@ -332,12 +336,13 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val filter = CameraConfigFilter(s).setFacingDirection(facing)
         val configs = s.getSupportedCameraConfigs(filter)
         val best = configs
-            .filter { it.imageSize.width <= 1920 }
+            .filter { it.imageSize.width <= 4096 }
             .maxWithOrNull(
                 compareBy<CameraConfig> { if (it.depthSensorUsage == CameraConfig.DepthSensorUsage.REQUIRE_AND_USE) 1 else 0 }
                     .thenBy { it.imageSize.width * it.imageSize.height }
             )
         if (best != null) s.cameraConfig = best
+        arCameraId = s.cameraConfig.cameraId
     }
 
     // ---------------------------------------------------------------- GL renderer
@@ -381,7 +386,14 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             } else {
                 hint("Point the camera at the face from 30–80 cm, put the crosshair on the nose, then tap Start.\n\nThe person being scanned must keep perfectly still.")
             }
-            State.CAPTURING -> maybeCaptureKeyframe(frame, camera)
+            State.CAPTURING -> if (finishRequested.compareAndSet(true, false)) {
+                val before = keyframes.size
+                captureKeyframe(frame, camera)
+                val fresh = keyframes.size > before
+                runOnUiThread { finishCapture(fresh) }
+            } else {
+                maybeCaptureKeyframe(frame, camera)
+            }
             else -> Unit
         }
     }
@@ -404,6 +416,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
             State.CAPTURING -> {
                 val before = selfie.keyframes.size
+                if (finishRequested.compareAndSet(true, false)) {
+                    selfie.update(s, frame, force = true)
+                    val fresh = selfie.keyframes.size > before
+                    runOnUiThread { finishCapture(fresh) }
+                    return
+                }
                 hint(selfie.update(s, frame))
                 if (selfie.keyframes.size != before) {
                     val snapshot = selfie.coverage.copyOf()
@@ -498,7 +516,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         sb.append(problem ?: when {
             covered < COVERAGE_BINS -> "Walk slowly around the head, keeping it centred. Fill the ring."
             highViews < 4 -> "Great! Now raise the phone and look down at the top of the head."
-            else -> "Done? Tap Finish."
+            else -> "Done? Stand in front of the face and tap Finish – a full-resolution photo is taken from there."
         })
         return sb.toString()
     }
@@ -527,7 +545,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         val file = File(workDir, "kf_%03d.jpg".format(keyframes.size))
         writeJpeg(nv21, cw, ch, file)
-        keyframes.add(Keyframe(camToWorld, worldToCam, depth, dw, dh, depthIntr, colorIntr, file.absolutePath))
+        keyframes.add(Keyframe(camToWorld, worldToCam, depth, dw, dh, depthIntr, colorIntr, file.absolutePath, sharpness = Sharpness.of(nv21, cw, ch)))
 
         val dx = camToWorld[12] - c[0]; val dy = camToWorld[13] - c[1]; val dz = camToWorld[14] - c[2]
         val dist = sqrt(dx * dx + dy * dy + dz * dz)
@@ -550,32 +568,60 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     // ---------------------------------------------------------------- processing
 
-    private fun finishCapture() {
+    /** Finish tapped: grab one last tracked frame on the GL thread, then take the detail photo. */
+    private fun requestFinish() {
         val minFrames = if (selfieMode) SelfieCapture.MIN_KEYFRAMES else MIN_KEYFRAMES
         val have = if (selfieMode) selfie.keyframes.size else keyframes.size
         if (have < minFrames) {
             Toast.makeText(this, "Capture at least $minFrames views first.", Toast.LENGTH_SHORT).show()
             return
         }
+        actionButton.isEnabled = false
+        secondaryButton.isEnabled = false
+        finishRequested.set(true)
+        // If tracking is lost the GL thread won't get to it: go ahead without the detail photo.
+        statusText.postDelayed({ if (finishRequested.compareAndSet(true, false)) finishCapture(false) }, 1500)
+    }
+
+    /** @param anchorFresh the last keyframe was taken just now, so the detail photo can be lined up with it. */
+    private fun finishCapture(anchorFresh: Boolean) {
+        if (state != State.CAPTURING) return
+        secondaryButton.isEnabled = true
         state = State.PROCESSING
         surfaceView.onPause()   // blocks until the GL thread is paused, so the keyframe list is stable
         session?.pause()
         val isSelfie = selfieMode
         val frames = ArrayList(if (isSelfie) selfie.keyframes else keyframes)
+        enterProcessing()
+        if (anchorFresh && frames.isNotEmpty()) {
+            showStatus(if (isSelfie) "Taking a sharp photo – hold still and keep looking at the screen…" else "Taking a sharp photo – hold the phone still…")
+            DetailPhoto.capture(this, front = isSelfie, cameraId = arCameraId) { shot -> processCapture(frames, shot) }
+        } else {
+            processCapture(frames, null)
+        }
+    }
+
+    private fun processCapture(frames: ArrayList<Keyframe>, shot: DetailPhoto.Shot?) {
+        val isSelfie = selfieMode
         val center = if (isSelfie) FloatArray(3) else headCenter!!.copyOf()
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle)
         lastSettings = settings
-        selfieInput = if (isSelfie && faceVerts != null && faceTris != null) Triple(frames, faceVerts, faceTris) else null
-        enterProcessing()
-
+        showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
             try {
                 jpegWriter.submit(Runnable {}).get()   // wait for pending JPEG writes
+                var detailNote = ""
+                if (shot != null) {
+                    runOnUiThread { showStatus("Lining up the sharp photo…") }
+                    val detail = try { DetailPhoto.toKeyframe(shot, frames.last(), workDir) } catch (e: Throwable) { null }
+                    if (detail != null) frames.add(detail) else detailNote = " (sharp photo skipped: it didn't line up)"
+                }
+                selfieInput = if (isSelfie && faceVerts != null && faceTris != null) Triple(frames, faceVerts, faceTris) else null
                 val colorSource = photoSource()
                 val onProgress = { msg: String, p: Float ->
-                    runOnUiThread { showStatus("Building 3D model…\n$msg"); progressBar.progress = (p * 100).toInt() }
+                    runOnUiThread { showStatus("Building 3D model$detailNote…\n$msg"); progressBar.progress = (p * 100).toInt() }
                 }
                 val pipeline = HeadScanPipeline(settings)
                 val result = if (isSelfie) {
@@ -875,6 +921,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         optionsPanel.visibility = View.GONE
         actionButton.text = "Finish"
         actionButton.isEnabled = false
+        secondaryButton.isEnabled = true
         secondaryButton.text = "Cancel"
         secondaryButton.visibility = View.VISIBLE
         coverageView.update(if (selfieMode) selfie.coverage.copyOf() else coverage.copyOf(), crosshair = !selfieMode)
@@ -941,6 +988,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private fun resetScan() {
         val wasRunning = state == State.CAPTURING || state == State.AIM
+        finishRequested.set(false)
+        secondaryButton.isEnabled = true
         if (wasRunning) surfaceView.onPause()
         pendingResult = null
         pendingCheck?.recycle(); pendingCheck = null

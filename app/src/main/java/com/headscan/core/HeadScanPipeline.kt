@@ -265,9 +265,10 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         progress("Baking texture", 0.55f)
         val atlas = UvAtlas(mesh.faceCount, s.textureSize)
         val baker = TextureBaker(mesh, normals, atlas)
+        val quality = TextureBaker.qualities(keyframes)
         keyframes.forEachIndexed { i, kf ->
             progress("Projecting photo ${i + 1}/${keyframes.size}", 0.55f + 0.4f * i / keyframes.size)
-            baker.addView(kf, colorSource.load(kf))
+            baker.addView(kf, colorSource.load(kf), quality = quality[i])
         }
         hairFill?.prepare(baker)
         val texture = if (hairFill != null) baker.finish(

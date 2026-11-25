@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.9**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.10**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -46,14 +46,27 @@ while the person being scanned sits still.
 2. Hold the phone 40–60 cm from the face, put the crosshair on the nose and tap **Start**.
 3. Walk slowly in a full circle around the head, keeping it centred. The ring fills in as angles are captured.
 4. Then raise the phone and look down at the top of the head from a few angles.
-5. Tap **Finish**. Processing takes roughly 10–40 seconds. The files are saved to `Downloads/HeadScans/...`.
+5. Finish standing in front of the face and tap **Finish**, then hold still for a second while a
+   full-resolution photo is taken. Processing takes roughly 10–40 seconds. The files are saved to `Downloads/HeadScans/...`.
 
 ## How to scan (selfie)
 
 1. Choose **Selfie** on the start screen, hold the phone at arm's length and look at the screen.
 2. Tap **Start**, keep the phone still and slowly turn your head one way, then the other, then tilt your chin
    up and down. The text tells you which angles are still missing.
-3. Tap **Finish**.
+3. Look straight at the screen and tap **Finish**, then hold still for a second while a full-resolution
+   photo is taken.
+
+## Sharp textures (0.10)
+
+* Every tracked frame gets a blur score (variance of the Laplacian, measured at a fixed 640 px scale).
+* When you tap Finish, ARCore is paused and the same camera takes one maximum-quality still with CameraX.
+  It is lined up with the last tracked frame by image registration (scale, shift and mirroring, found by
+  normalised cross-correlation, coarse to fine), colour-matched to it, and used as an extra keyframe.
+  If it can't be matched (the phone or head moved), it is skipped and the scan still finishes.
+* The texture is no longer an average of all photos. Each texel takes its colour from the best photo for it:
+  most front-on, most image pixels on that spot, and sharpest. Photos only blend over a narrow band where two
+  are about equally good, so seams stay soft without smearing detail.
 
 Keep the three files in the same folder when you copy them, since the OBJ refers to the MTL and the MTL to the PNG.
 Units are metres, +Y is up and the face looks toward +Z (Blender: import with "Y up / -Z forward" defaults works).
@@ -87,8 +100,9 @@ MeshOps         crop to head + neck (cylinder below the chin, remove shoulder to
                 Taubin smoothing to remove depth noise
 Decimator       quadric-error edge collapse down to 1500 triangles (boundary-preserving, no flips)
 UvAtlas         pack triangles in pairs into a grid on the 1024² texture
-TextureBaker    project every texel into each photo, depth-test for occlusion, blend by view angle,
-                fill unseen texels and pad seams
+ImageRegistration  line the full-resolution Finish photo up with the last tracked frame
+TextureBaker    project every texel into each photo, depth-test for occlusion, take the best photo per texel
+                (view angle × resolution × sharpness), fill unseen texels and pad seams
 ObjWriter       OBJ (v / vt / vn / f) + MTL with map_Kd
 ```
 
