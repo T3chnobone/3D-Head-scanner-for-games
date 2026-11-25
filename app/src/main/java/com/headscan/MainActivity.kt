@@ -111,6 +111,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         actionButton = findViewById(R.id.action_button)
         secondaryButton = findViewById(R.id.secondary_button)
         progressBar = findViewById(R.id.progress)
+        findViewById<TextView>(R.id.version_text).text = "v${BuildConfig.VERSION_NAME}"
 
         surfaceView.preserveEGLContextOnPause = true
         surfaceView.setEGLContextClientVersion(2)

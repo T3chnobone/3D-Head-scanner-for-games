@@ -1,8 +1,6 @@
 package com.headscan.core
 
-import java.awt.image.BufferedImage
 import java.io.File
-import javax.imageio.ImageIO
 import kotlin.math.*
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -134,9 +132,11 @@ class SyntheticScanTest {
         val out = File("build/scan").apply { mkdirs() }
         File(out, "head.obj").writeText(res.objText)
         File(out, "head.mtl").writeText(res.mtlText)
-        val img = BufferedImage(res.textureSize, res.textureSize, BufferedImage.TYPE_INT_RGB)
-        img.setRGB(0, 0, res.textureSize, res.textureSize, res.texture, 0, res.textureSize)
-        ImageIO.write(img, "png", File(out, "head_texture.png"))
+        // Texture as a binary PPM (java.awt isn't available in Android unit tests).
+        File(out, "head_texture.ppm").outputStream().buffered().use { o ->
+            o.write("P6\n${res.textureSize} ${res.textureSize}\n255\n".toByteArray())
+            for (c in res.texture) { o.write((c shr 16) and 255); o.write((c shr 8) and 255); o.write(c and 255) }
+        }
 
         // Parse back the OBJ and check geometry + texture against ground truth.
         val vs = ArrayList<FloatArray>(); val vts = ArrayList<FloatArray>(); val fs = ArrayList<IntArray>()

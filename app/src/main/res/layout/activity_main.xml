@@ -25,6 +25,19 @@
         android:textColor="@android:color/white"
         android:textSize="16sp" />
 
+    <TextView
+        android:id="@+id/version_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="20dp"
+        android:layout_marginBottom="104dp"
+        android:alpha="0.8"
+        android:shadowColor="#000000"
+        android:shadowRadius="3"
+        android:textColor="@android:color/white"
+        android:textSize="12sp" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

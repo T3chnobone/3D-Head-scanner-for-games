@@ -12,7 +12,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0"
+        versionName = "0.1"
     }
 
     buildTypes {
@@ -21,6 +21,9 @@ android {
             // Signed with the debug key so `assembleRelease` gives an installable APK out of the box.
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+    buildFeatures {
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
