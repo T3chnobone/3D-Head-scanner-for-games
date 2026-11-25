@@ -247,6 +247,8 @@ class SyntheticScanTest {
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_1500")
             selfie(3500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_3500")
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_ginger", recolor = 18f to 0.25f)
+            for (h in listOf(HairStyle.SPIKY, HairStyle.SLICKED_BACK, HairStyle.CURTAINS, HairStyle.FAUX_HAWK, HairStyle.LONG_LOCKS))
+                selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = h, outName = "locks_$h")
         } finally { skinMode = false; images.clear() }
     }
 

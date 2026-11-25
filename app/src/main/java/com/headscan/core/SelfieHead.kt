@@ -9,7 +9,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Hair added to the generic head in Selfie mode. */
-enum class HairStyle { SWEPT, BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
+enum class HairStyle { SWEPT, SPIKY, SLICKED_BACK, CURTAINS, FAUX_HAWK, LONG_LOCKS, BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
 
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
@@ -222,7 +222,14 @@ class SelfieHead(
             }
             HairStyle.BOB -> 0.009f + 0.008f * smoothstep(0.3f, -0.5f, u)
             HairStyle.BUN -> 0.005f
-            HairStyle.SWEPT -> 0.006f + 0.010f * smoothstep(0.2f, 0.9f, u)   // under-layer beneath the locks
+            // under-layer beneath the locks
+            HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.LONG_LOCKS -> 0.006f + 0.010f * smoothstep(0.2f, 0.9f, u)
+            HairStyle.SPIKY -> 0.006f + 0.006f * smoothstep(0.2f, 0.9f, u)
+            HairStyle.SLICKED_BACK -> 0.005f + 0.007f * smoothstep(0.2f, 0.9f, u)
+            HairStyle.FAUX_HAWK -> {
+                val g = lx / 0.036f
+                0.003f + 0.008f * exp(-g * g) * smoothstep(0.1f, 0.8f, u)
+            }
             HairStyle.BUZZ -> 0f
         }
         return t * cov
@@ -310,7 +317,17 @@ class SelfieHead(
 
     private class LockHit(var d: Float = 1f, var across: Float = 0f, var along: Float = 0f, var lock: Int = -1)
 
-    private val locks: List<Lock> by lazy { if (hairStyle == HairStyle.SWEPT) buildSweptLocks() else emptyList() }
+    private val locks: List<Lock> by lazy {
+        when (hairStyle) {
+            HairStyle.SWEPT -> buildSweptLocks()
+            HairStyle.SPIKY -> buildSpikyLocks()
+            HairStyle.SLICKED_BACK -> buildSlickedLocks()
+            HairStyle.CURTAINS -> buildCurtainLocks()
+            HairStyle.FAUX_HAWK -> buildFauxHawkLocks()
+            HairStyle.LONG_LOCKS -> buildLongLocks()
+            else -> emptyList()
+        }
+    }
 
     /** Point on the generic skull in unit-sphere direction (dx,dy,dz), lifted [lift] m along the surface normal. */
     private fun scalpPoint(dx: Float, dy: Float, dz: Float, lift: Float, out: FloatArray, o: Int, nOut: FloatArray) {
@@ -329,18 +346,33 @@ class SelfieHead(
      * A lock from unit-sphere direction [a] to [b] (great-circle path), with the tip flicking [flick] m off the
      * scalp. Width [w] (m) at its fullest; it tapers to a point at the tip and narrows at the root.
      */
-    private fun lock(a: FloatArray, b: FloatArray, w: Float, lift: Float = 0.007f, flick: Float = 0.004f): Lock {
-        val steps = 9
+    private fun lock(a: FloatArray, b: FloatArray, w: Float, lift: Float = 0.007f, flick: Float = 0.004f, drop: Float = 0f): Lock {
+        val skull = 9
+        val hang = if (drop > 0f) 4 else 0
+        val steps = skull + hang
         val p = FloatArray(steps * 3); val n = FloatArray(steps * 3); val r = FloatArray(steps)
         val al = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); val bl = sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2])
         val ax = a[0] / al; val ay = a[1] / al; val az = a[2] / al
         val bx = b[0] / bl; val by = b[1] / bl; val bz = b[2] / bl
         val om = kotlin.math.acos((ax * bx + ay * by + az * bz).coerceIn(-1f, 1f)).coerceAtLeast(1e-4f)
-        for (i in 0 until steps) {
-            val t = i / (steps - 1f)
+        for (i in 0 until skull) {
+            val t = i / (skull - 1f)
             val s0 = kotlin.math.sin((1 - t) * om) / kotlin.math.sin(om); val s1 = kotlin.math.sin(t * om) / kotlin.math.sin(om)
             val h = lift + 0.004f * kotlin.math.sin(Math.PI.toFloat() * t) + flick * t * t * t
             scalpPoint(s0 * ax + s1 * bx, s0 * ay + s1 * by, s0 * az + s1 * bz, h, p, 3 * i, n)
+        }
+        // Long hair: carry on straight down from the end of the skull path, drifting slightly outward.
+        val e = 3 * (skull - 1)
+        var ox = n[e]; var oz = n[e + 2]
+        val ol = sqrt(ox * ox + oz * oz).coerceAtLeast(1e-4f); ox /= ol; oz /= ol
+        for (k in 1..hang) {
+            val o = 3 * (skull - 1 + k)
+            val f = k / hang.toFloat()
+            p[o] = p[e] + ox * 0.006f * f; p[o + 1] = p[e + 1] - drop * f; p[o + 2] = p[e + 2] + oz * 0.006f * f
+            n[o] = ox; n[o + 1] = 0f; n[o + 2] = oz
+        }
+        for (i in 0 until steps) {
+            val t = i / (steps - 1f)
             // fullest a third of the way along, a point at the tip
             r[i] = w * 0.5f * (0.55f + 0.45f * kotlin.math.sin(Math.PI.toFloat() * min(1f, t * 1.5f))) * (1f - t * t * t).coerceAtLeast(0f)
         }
@@ -398,6 +430,103 @@ class SelfieHead(
         // Back: falling from the whorl to the nape.
         for ((k, a) in listOf(-155f, 180f, 155f, 130f, -130f, 105f, -105f).withIndex()) {
             out.add(lock(crown, dir(-0.48f - 0.08f * (k % 2), a), w = 0.062f, lift = 0.009f, flick = 0.006f))
+        }
+        return out
+    }
+
+    /** Short spiky cut: clumps all over that rise off the head into sharp points, pointing up and back. */
+    private fun buildSpikyLocks(): List<Lock> {
+        val out = ArrayList<Lock>()
+        val tipU = ((maxY - 0.01f - headCy) / ry).coerceIn(0.3f, 0.85f)
+        // Front row: short spikes flicking up from the hairline.
+        for ((k, d) in listOf(-50f, -25f, 0f, 25f, 50f).withIndex()) {
+            out.add(lock(dir(0.82f, d + 180f * 0f + 15f * (k % 2) - 5f), dir(tipU + 0.12f, d * 1.1f), w = 0.04f, lift = 0.01f, flick = 0.022f))
+        }
+        // Top and crown: spikes pointing up and back.
+        for (ring in 0..1) for (j in 0 until 6) {
+            val deg = -150f + 60f * j + 30f * ring
+            val u0 = if (ring == 0) 0.95f else 0.7f
+            out.add(lock(dir(u0, deg), dir(u0 - 0.28f, deg + 8f), w = 0.044f, lift = 0.012f, flick = 0.026f))
+        }
+        // Sides and back: shorter spikes pointing down and back.
+        for (j in 0 until 8) {
+            val deg = 70f + 31f * j
+            out.add(lock(dir(0.4f, deg), dir(0.02f - 0.06f * (j % 2), deg + 15f), w = 0.042f, lift = 0.008f, flick = 0.014f))
+        }
+        for (j in 0 until 7) {
+            val deg = 90f + 30f * j
+            out.add(lock(dir(0.05f, deg), dir(-0.32f - 0.06f * (j % 2), deg + 10f), w = 0.044f, lift = 0.006f, flick = 0.01f))
+        }
+        return out
+    }
+
+    /** Slicked back with a quiff: clumps start at the forehead hairline and sweep over the top to the nape. */
+    private fun buildSlickedLocks(): List<Lock> {
+        val out = ArrayList<Lock>()
+        val frontU = ((maxY - headCy) / ry).coerceIn(0.35f, 0.85f)
+        for ((k, d) in listOf(-50f, -25f, 0f, 25f, 50f).withIndex()) {
+            out.add(lock(dir(frontU, d), dir(0.15f + 0.08f * (k % 2), 180f - d * 1.4f), w = 0.07f, lift = 0.012f, flick = 0.004f))
+        }
+        for (side in listOf(-1f, 1f)) for ((k, a) in listOf(75f, 105f).withIndex()) {
+            out.add(lock(dir(0.55f, side * (a - 25f)), dir(-0.2f - 0.08f * k, side * (a + 45f)), w = 0.055f, lift = 0.008f, flick = 0.004f))
+        }
+        for ((k, a) in listOf(-160f, 180f, 160f).withIndex()) {
+            out.add(lock(dir(0.6f, a * 0.3f), dir(-0.5f - 0.06f * (k % 2), a), w = 0.06f, lift = 0.01f, flick = 0.004f))
+        }
+        return out
+    }
+
+    /** Centre parting with a curtain fringe: clumps fall from the parting to either side of the forehead. */
+    private fun buildCurtainLocks(): List<Lock> {
+        val out = ArrayList<Lock>()
+        val tipU = ((maxY - 0.03f - headCy) / ry).coerceIn(0.2f, 0.8f)
+        for (side in listOf(-1f, 1f)) {
+            // Fringe curtains, longest at the temples.
+            for ((k, d) in listOf(18f, 42f, 66f).withIndex()) {
+                out.add(lock(dir(0.92f, side * 5f), dir(tipU - 0.06f * k, side * d), w = 0.05f, lift = 0.012f, flick = 0.006f))
+            }
+            // Sides down over the ears.
+            for ((k, a) in listOf(90f, 120f).withIndex()) {
+                out.add(lock(dir(0.9f, side * (a - 60f)), dir(-0.25f - 0.07f * k, side * (a + 10f)), w = 0.058f, lift = 0.009f, flick = 0.006f))
+            }
+        }
+        for ((k, a) in listOf(-155f, 180f, 155f, 130f, -130f).withIndex()) {
+            out.add(lock(dir(0.85f, a * 0.4f), dir(-0.48f - 0.08f * (k % 2), a), w = 0.06f, lift = 0.01f, flick = 0.005f))
+        }
+        return out
+    }
+
+    /** Faux hawk: shaved-looking sides, a ridge of clumps along the middle rising into points. */
+    private fun buildFauxHawkLocks(): List<Lock> {
+        val out = ArrayList<Lock>()
+        val frontU = ((maxY - headCy) / ry).coerceIn(0.35f, 0.85f)
+        // Ridge: rows of clumps combed up from each side into the middle, tips pointing up and back.
+        for (j in 0 until 6) {
+            val phi = Math.toRadians((35.0 + 22.0 * j)).toFloat()
+            val my = kotlin.math.sin(phi); val mz = kotlin.math.cos(phi)
+            val phi2 = phi + 0.2f
+            for (side in listOf(-1f, 1f)) {
+                val start = floatArrayOf(side * 0.5f, my * 0.87f, mz * 0.87f)
+                val end = floatArrayOf(side * 0.04f, kotlin.math.sin(phi2), kotlin.math.cos(phi2))
+                out.add(lock(start, end, w = 0.046f, lift = 0.011f + 0.002f * min(j, 3), flick = 0.016f))
+            }
+        }
+        return out
+    }
+
+    /** Long hair: clumps from a crown parting run over the head and hang past the jaw at the sides and back. */
+    private fun buildLongLocks(): List<Lock> {
+        val out = ArrayList<Lock>()
+        val tipU = ((maxY - 0.03f - headCy) / ry).coerceIn(0.2f, 0.8f)
+        val crownU = 0.9f
+        // Side-swept fringe.
+        for ((k, d) in listOf(25f, -5f, -35f).withIndex()) {
+            out.add(lock(dir(crownU, d + 70f), dir(tipU - 0.03f * k, d - 25f), w = 0.055f, lift = 0.012f, flick = 0.006f))
+        }
+        // Long clumps around the sides and back, hanging below the jaw.
+        val len = (headCy - minY) * 0.8f
+        for ((k, a) in listOf(-75f, -95f, -115f, -135f, -158f, 180f, 158f, 135f, 115f, 95f, 75f).withIndex()) {
+            out.add(lock(dir(crownU, a * 0.3f), dir(-0.15f, a), w = 0.07f, lift = 0.01f, flick = 0f, drop = len * (0.85f + 0.15f * (k % 2))))
         }
         return out
     }
@@ -468,7 +597,7 @@ class SelfieHead(
 
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
-        val pad = when (hairStyle) { HairStyle.BUZZ -> 0.02f; HairStyle.SWEPT -> 0.06f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
+        val pad = when (hairStyle) { HairStyle.BUZZ -> 0.02f; HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.SLICKED_BACK, HairStyle.LONG_LOCKS -> 0.06f; HairStyle.SPIKY, HairStyle.FAUX_HAWK -> 0.08f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
         val x0 = min(headCx - rx, minX) - pad; val x1 = max(headCx + rx, maxX) + pad
         val y0 = neckBottom; val y1 = max(headCy + ry, maxY) + pad
         val z0 = headCz - rz - pad; val z1 = max(noseZ, headCz + rz) + pad
