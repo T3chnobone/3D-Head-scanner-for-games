@@ -173,7 +173,7 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
      * Produces the final ARGB texture (row 0 = top). Unseen texels get [fillColor] at their position
      * (or the mean seen colour), gaps are dilated.
      */
-    fun finish(fillColor: ((Float, Float, Float) -> Int)? = null): IntArray {
+    fun finish(fillColor: ((Float, Float, Float) -> Int)? = null, overrideColor: ((Float, Float, Float) -> Int?)? = null): IntArray {
         val out = IntArray(size * size)
         val filled = BooleanArray(size * size)
         var sr = 0.0; var sg = 0.0; var sb = 0.0; var sn = 0
@@ -186,7 +186,10 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
         for (t in texelIndex.indices) {
             val i = texelIndex[t]
             val r: Int; val g: Int; val b: Int
-            if (accW[t] > 0f) {
+            val forced = overrideColor?.invoke(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])
+            if (forced != null) {
+                r = (forced shr 16) and 255; g = (forced shr 8) and 255; b = forced and 255
+            } else if (accW[t] > 0f) {
                 r = (accR[t] / accW[t]).toInt().coerceIn(0, 255)
                 g = (accG[t] / accW[t]).toInt().coerceIn(0, 255)
                 b = (accB[t] / accW[t]).toInt().coerceIn(0, 255)

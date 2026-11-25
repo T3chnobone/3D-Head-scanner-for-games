@@ -23,6 +23,8 @@ data class ScanSettings(
     val minWeight: Float = 1.5f,
     val smoothingIterations: Int = 8,
     val style: HeadStyle = HeadStyle.REALISTIC,
+    /** Selfie mode only: hair added to the generic head. */
+    val hairStyle: HairStyle = HairStyle.BUZZ,
 )
 
 /** Visual style of the generated head. */
@@ -51,6 +53,16 @@ class ScanResult(
         ObjWriter.obj(mesh, normals, atlas, mtlFileName, HeadScanPipeline.MATERIAL, flatShaded)
 
     fun mtlText(textureFileName: String = "head_texture.png"): String = ObjWriter.mtl(HeadScanPipeline.MATERIAL, textureFileName)
+
+    /** A copy with the mesh stretched about the head origin (texture and UVs unchanged). */
+    fun scaled(sx: Float, sy: Float, sz: Float): ScanResult {
+        if (sx == 1f && sy == 1f && sz == 1f) return this
+        val p = mesh.positions.copyOf()
+        for (v in 0 until mesh.vertexCount) { p[3 * v] *= sx; p[3 * v + 1] *= sy; p[3 * v + 2] *= sz }
+        val m = Mesh(p, mesh.faces)
+        val n = if (flatShaded) MeshOps.faceNormals(m) else MeshOps.vertexNormals(m)
+        return ScanResult(m, n, flatShaded, atlas, texture, textureSize)
+    }
 
     /** Un-indexed triangle arrays for real-time preview: xyz, normal, texture st (t = 0 at the top row). */
     fun previewArrays(): Triple<FloatArray, FloatArray, FloatArray> {
@@ -117,7 +129,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
     ): ScanResult {
         if (keyframes.size < 3) throw ScanException("Need at least 3 captured views, got ${keyframes.size}.")
         progress("Fitting head to your face", 0.05f)
-        val head = SelfieHead(faceVertices, faceTriangles)
+        val head = SelfieHead(faceVertices, faceTriangles, settings.hairStyle)
         val vol = head.buildVolume(0.003f, 0.012f)
         val hair = HairFill(head)
         return finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource, hair, crop = false, progress, smoothing = 3)
@@ -132,6 +144,16 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             baker.meanSeenColor(30) { _, y, z -> y > head.maxY + 0.005f && z > head.headCz }?.let { hair = it }
         }
         fun color(x: Float, y: Float, z: Float) = if (head.isHairRegion(x, y, z)) hair else skin
+
+        /** Added hair geometry is always painted with hair colour plus a strand pattern (photos don't match its shape). */
+        fun override(x: Float, y: Float, z: Float): Int? {
+            if (!head.isAddedHair(x, y, z)) return null
+            val ang = kotlin.math.atan2(x - head.headCx, z - head.headCz)
+            val strands = 0.5f + 0.5f * kotlin.math.sin(ang * 140f + kotlin.math.sin(y * 90f) * 2f)
+            val k = 0.78f + 0.3f * strands
+            fun ch(c: Int) = (c * k).toInt().coerceIn(0, 255)
+            return (0xFF shl 24) or (ch((hair shr 16) and 255) shl 16) or (ch((hair shr 8) and 255) shl 8) or ch(hair and 255)
+        }
     }
 
     private fun finishMesh(
@@ -185,7 +207,10 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             baker.addView(kf, colorSource.load(kf))
         }
         hairFill?.prepare(baker)
-        val texture = if (hairFill != null) baker.finish { x, y, z -> hairFill.color(x, y, z) } else baker.finish()
+        val texture = if (hairFill != null) baker.finish(
+            fillColor = { x, y, z -> hairFill.color(x, y, z) },
+            overrideColor = { x, y, z -> hairFill.override(x, y, z) },
+        ) else baker.finish()
         if (s.style == HeadStyle.GOLDENEYE_SOURCE) {
             baker.bakeShading(texture, SourceStyle.vertexOcclusion(mesh, normals), SourceStyle::shade)
             SourceStyle.grade(texture, s.textureSize)

@@ -8,6 +8,9 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
+/** Hair added to the generic head in Selfie mode. */
+enum class HairStyle { BUZZ, SHORT, LONG }
+
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
  * Augmented Faces mesh, averaged over the capture) is merged onto a generic head and neck that is
@@ -15,7 +18,11 @@ import kotlin.math.sqrt
  *
  * Coordinates are in the face frame: +Y up, +Z out of the face, metres.
  */
-class SelfieHead(faceVertices: FloatArray, private val faceTriangles: IntArray) {
+class SelfieHead(
+    faceVertices: FloatArray,
+    private val faceTriangles: IntArray,
+    val hairStyle: HairStyle = HairStyle.BUZZ,
+) {
     private val verts = faceVertices
 
     val minX: Float; val maxX: Float; val minY: Float; val maxY: Float; val noseZ: Float
@@ -138,9 +145,42 @@ class SelfieHead(faceVertices: FloatArray, private val faceTriangles: IntArray) 
         return smin(head, neck, 0.012f)
     }
 
+    /** Height of the hairline: at the forehead in front, sloping down to the nape at the back. */
+    private fun hairlineY(z: Float): Float {
+        val front = headCz + rz * 0.55f
+        val back = headCz - rz
+        val t = ((z - back) / (front - back)).coerceIn(0f, 1f)
+        val nape = minY + 0.035f
+        val forehead = maxY - 0.012f
+        return nape + (forehead - nape) * t * t
+    }
+
+    /** Signed distance of the hair volume for the chosen style (large positive for BUZZ = no extra volume). */
+    fun hairSdf(x: Float, y: Float, z: Float): Float {
+        if (hairStyle == HairStyle.BUZZ) return 1f
+        val thick = if (hairStyle == HairStyle.SHORT) 0.014f else 0.02f
+        // Cap: the cranium grown outward, kept above the hairline and behind the forehead.
+        val ex = (x - headCx) / (rx + thick); val ey = (y - headCy) / (ry + thick * 1.6f); val ez = (z - headCz) / (rz + thick)
+        val shell = (sqrt(ex * ex + ey * ey + ez * ez) - 1f) * min(rx, min(ry, rz))
+        val faceCut = z - (headCz + rz * 0.62f)           // never in front of the forehead
+        var cap = max(shell, max(hairlineY(z) - y, faceCut))
+        if (hairStyle == HairStyle.LONG) {
+            // Curtain: falls behind and beside the face to below the jaw, with a rounded bottom.
+            val cx2 = (x - headCx) / (rx + 0.014f); val cz2 = (z - (headCz - 0.008f)) / (rz + 0.012f)
+            val tube = (sqrt(cx2 * cx2 + cz2 * cz2) - 1f) * rx
+            val bottom = minY - 0.045f
+            val vr = (headCy - bottom)
+            val ey2 = (y - headCy) / vr; val ex2 = (x - headCx) / (rx + 0.03f)
+            val rounded = (sqrt(ey2 * ey2 + ex2 * ex2) - 1f) * rx
+            val curtain = max(max(tube, rounded), max(y - headCy, z - (headCz + rz * 0.15f)))
+            cap = smin(cap, curtain, 0.015f)
+        }
+        return cap
+    }
+
     /** Signed distance of the personalised head: generic head with the real face surface merged in front. */
     fun sdf(x: Float, y: Float, z: Float): Float {
-        val g = genericSdf(x, y, z)
+        val g = min(genericSdf(x, y, z), hairSdf(x, y, z))
         val fi = gx(x); val fj = gy(y)
         val i = fi.toInt(); val j = fj.toInt()
         if (fi < 0 || fj < 0 || i >= gw || j >= gh) return g
@@ -157,7 +197,7 @@ class SelfieHead(faceVertices: FloatArray, private val faceTriangles: IntArray) 
 
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
-        val pad = 0.02f
+        val pad = if (hairStyle == HairStyle.BUZZ) 0.02f else 0.045f
         val x0 = -(rx + pad); val x1 = rx + pad
         val y0 = neckBottom; val y1 = headCy + ry + pad
         val z0 = headCz - rz - pad; val z1 = noseZ + pad
@@ -178,6 +218,10 @@ class SelfieHead(faceVertices: FloatArray, private val faceTriangles: IntArray) 
         }
         return vol
     }
+
+    /** True on hair geometry added by the hairstyle (outside the bald head). */
+    fun isAddedHair(x: Float, y: Float, z: Float): Boolean =
+        hairStyle != HairStyle.BUZZ && hairSdf(x, y, z) < 0.004f && genericSdf(x, y, z) > 0.002f
 
     /** True where unseen texels should get hair colour (scalp and back of head) rather than skin colour. */
     fun isHairRegion(x: Float, y: Float, z: Float): Boolean {

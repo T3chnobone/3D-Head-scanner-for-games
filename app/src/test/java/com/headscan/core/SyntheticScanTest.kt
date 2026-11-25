@@ -209,7 +209,21 @@ class SyntheticScanTest {
     @Test
     fun selfieGoldenEyeStyle() = selfie(1500, HeadStyle.GOLDENEYE_SOURCE)
 
-    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC) {
+    @Test
+    fun selfieShortHair() = selfie(1500, hair = HairStyle.SHORT)
+
+    @Test
+    fun selfieLongHair() = selfie(3500, hair = HairStyle.LONG)
+
+    @Test
+    fun scaledResult() {
+        val m = Mesh(floatArrayOf(0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f, 0f), intArrayOf(0, 1, 2))
+        val r = ScanResult(m, MeshOps.vertexNormals(m), false, UvAtlas(1, 64), IntArray(64 * 64), 64)
+        val s = r.scaled(2f, 3f, 1f)
+        assertTrue(s.mesh.positions[3] == 2f && s.mesh.positions[7] == 3f && r.mesh.positions[3] == 1f)
+    }
+
+    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ) {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
@@ -239,12 +253,12 @@ class SyntheticScanTest {
             val m = world.camToWorld.copyOf(); m[12] -= c[0]; m[13] -= c[1]; m[14] -= c[2]
             kfs.add(Keyframe(m, invertRigid(m), ShortArray(1), 1, 1, world.depthIntrinsics.scaledTo(1, 1), world.colorIntrinsics, world.colorRef))
         }
-        val res = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style)).runSelfie(
+        val res = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair)).runSelfie(
             kfs, fv, tris.toIntArray(), { images[it.colorRef]!! },
         )
         println("Selfie $target: ${res.triangleCount} tris, ${res.vertexCount} verts")
         assertTrue(res.triangleCount in (target - 100)..target, "triangle count ${res.triangleCount}")
-        val out = File("build/scan_selfie_${target}_$style").apply { mkdirs() }
+        val out = File("build/scan_selfie_${target}_${style}_$hair").apply { mkdirs() }
         File(out, "head.obj").writeText(res.objText())
         File(out, "head.mtl").writeText(res.mtlText())
         File(out, "head_texture.ppm").outputStream().buffered().use { o ->

@@ -35,6 +35,13 @@ class PreviewView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val tmp = FloatArray(16)
     private val mvp = FloatArray(16)
 
+    @Volatile private var sx = 1f
+    @Volatile private var sy = 1f
+    @Volatile private var sz = 1f
+
+    /** Live stretch of the model (the saved mesh is stretched the same way). */
+    fun setShapeScale(x: Float, y: Float, z: Float) { sx = x; sy = y; sz = z }
+
     @Volatile private var yaw = 0f
     @Volatile private var pitch = 0f
     @Volatile private var dragging = false
@@ -120,11 +127,12 @@ class PreviewView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (!dragging && lastFrameMs != 0L) yaw += (now - lastFrameMs) * 0.02f
         lastFrameMs = now
 
-        val dist = m.radius * 3.6f
+        val dist = m.radius * 3.6f * max(1f, max(sx, max(sy, sz)))
         Matrix.setLookAtM(view, 0, 0f, 0f, dist, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.setIdentityM(model, 0)
         Matrix.rotateM(model, 0, pitch, 1f, 0f, 0f)
         Matrix.rotateM(model, 0, yaw, 0f, 1f, 0f)
+        Matrix.scaleM(model, 0, sx, sy, sz)
         Matrix.translateM(model, 0, -m.cx, -m.cy, -m.cz)
         Matrix.multiplyMM(tmp, 0, view, 0, model, 0)
         Matrix.multiplyMM(mvp, 0, proj, 0, tmp, 0)

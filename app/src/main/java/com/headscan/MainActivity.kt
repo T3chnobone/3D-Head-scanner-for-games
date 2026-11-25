@@ -23,6 +23,8 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import android.view.ViewGroup
 import com.headscan.core.HeadStyle
+import com.headscan.core.HairStyle
+import android.widget.SeekBar
 import com.headscan.core.ScanResult
 import android.widget.ProgressBar
 import android.widget.RadioGroup
@@ -116,6 +118,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var targetTriangles = LOW_TRIANGLES
     private lateinit var selfie: SelfieCapture
     private var headStyle = HeadStyle.REALISTIC
+    private var hairStyle = HairStyle.BUZZ
+    private lateinit var hairGroup: RadioGroup
+    private lateinit var editPanel: View
+    private lateinit var editBars: List<SeekBar>
+    private val shapeScale = floatArrayOf(1f, 1f, 1f, 1f)   // size, width, height, depth
     private lateinit var previewView: PreviewView
     private var pendingResult: ScanResult? = null
     private var pendingCheck: android.graphics.Bitmap? = null
@@ -136,6 +143,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         previewView = findViewById(R.id.preview_view)
         applySystemBarInsets()
         headStyle = if (prefs.getString("style", "") == HeadStyle.GOLDENEYE_SOURCE.name) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
+        hairGroup = findViewById(R.id.hair_group)
+        hairStyle = HairStyle.values().firstOrNull { it.name == prefs.getString("hair", "") } ?: HairStyle.BUZZ
+        hairGroup.check(when (hairStyle) { HairStyle.SHORT -> R.id.hair_short; HairStyle.LONG -> R.id.hair_long; else -> R.id.hair_buzz })
+        hairGroup.setOnCheckedChangeListener { _, id ->
+            hairStyle = when (id) { R.id.hair_short -> HairStyle.SHORT; R.id.hair_long -> HairStyle.LONG; else -> HairStyle.BUZZ }
+            prefs.edit().putString("hair", hairStyle.name).apply()
+        }
+        hairGroup.visibility = if (selfieMode) View.VISIBLE else View.GONE
+        setupShapeEditor()
         val styleGroup = findViewById<RadioGroup>(R.id.style_group)
         styleGroup.check(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) R.id.style_goldeneye else R.id.style_realistic)
         styleGroup.setOnCheckedChangeListener { _, id ->
@@ -203,6 +219,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         session?.close()
         session = null
         selfieMode = useSelfie
+        hairGroup.visibility = if (useSelfie) View.VISIBLE else View.GONE
         prefs.edit().putBoolean("selfie", useSelfie).apply()
         lastHint = ""
         viewportChanged = true
@@ -532,7 +549,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val center = if (isSelfie) FloatArray(3) else headCenter!!.copyOf()
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
-        val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle)
+        val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle)
         enterProcessing()
 
         lifecycleScope.launch(Dispatchers.Default) {
@@ -580,7 +597,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setTitle("Save head scan")
             .setMessage("Name for this model:")
             .setView(box)
-            .setPositiveButton("Save") { _, _ -> save(result, input.text.toString()) }
+            .setPositiveButton("Save") { _, _ ->
+                save(result.scaled(shapeScale[0] * shapeScale[1], shapeScale[0] * shapeScale[2], shapeScale[0] * shapeScale[3]), input.text.toString())
+            }
             .setNegativeButton("Cancel", null)
             .show()
         input.requestFocus()
@@ -609,6 +628,35 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 }
             }
         }
+    }
+
+    /** Size / width / height / depth sliders shown with the preview. */
+    private fun setupShapeEditor() {
+        editPanel = findViewById(R.id.edit_panel)
+        val ids = listOf(R.id.edit_size, R.id.edit_width, R.id.edit_height, R.id.edit_depth)
+        val labels = listOf(R.id.edit_size_label, R.id.edit_width_label, R.id.edit_height_label, R.id.edit_depth_label)
+        val names = listOf("Size", "Width", "Height", "Depth")
+        editBars = ids.map { findViewById(it) }
+        editBars.forEachIndexed { i, bar ->
+            val label = findViewById<TextView>(labels[i])
+            bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                    // Size: 50%..150%, axes: 70%..130%
+                    val range = if (i == 0) 1.0f else 0.6f
+                    shapeScale[i] = 1f + (progress - 50) / 50f * range / 2f
+                    label.text = "${names[i]} ${(shapeScale[i] * 100).toInt()}%"
+                    previewView.setShapeScale(shapeScale[0] * shapeScale[1], shapeScale[0] * shapeScale[2], shapeScale[0] * shapeScale[3])
+                }
+                override fun onStartTrackingTouch(sb: SeekBar) {}
+                override fun onStopTrackingTouch(sb: SeekBar) {}
+            })
+        }
+        findViewById<View>(R.id.edit_reset).setOnClickListener { resetShape() }
+        resetShape()
+    }
+
+    private fun resetShape() {
+        editBars.forEach { it.progress = 51; it.progress = 50 }   // force a change event so labels update
     }
 
     private fun confirmDiscard() {
@@ -651,6 +699,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private fun enterAim() {
         state = State.AIM
+        editPanel.visibility = View.GONE
         optionsPanel.visibility = View.VISIBLE
         progressBar.visibility = View.GONE
         secondaryButton.visibility = View.GONE
@@ -688,15 +737,18 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         previewView.visibility = View.VISIBLE
         previewView.onResume()
         previewView.show(result)
+        resetShape()
+        editPanel.visibility = View.VISIBLE
         actionButton.text = "Save"
         actionButton.isEnabled = true
         secondaryButton.text = "Discard"
         secondaryButton.visibility = View.VISIBLE
         val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
-        showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin. Save it with a name, or discard it.")
+        showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin, adjust the shape below, then save it with a name or discard it.")
     }
 
     private fun enterDone(message: String) {
+        editPanel.visibility = View.GONE
         optionsPanel.visibility = View.GONE
         state = State.DONE
         progressBar.visibility = View.GONE
