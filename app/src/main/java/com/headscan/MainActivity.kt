@@ -122,7 +122,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var targetTriangles = LOW_TRIANGLES
     private lateinit var selfie: SelfieCapture
     private var headStyle = HeadStyle.REALISTIC
-    private var hairStyle = HairStyle.BUZZ
+    private var hairStyle = HairStyle.SWEPT
     private lateinit var hairGroup: View
     private lateinit var editPanel: View
     private lateinit var editBars: List<SeekBar>
@@ -163,7 +163,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         applySystemBarInsets()
         headStyle = if (prefs.getString("style", "") == HeadStyle.GOLDENEYE_SOURCE.name) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
         hairGroup = findViewById(R.id.hair_group)
-        hairStyle = HairStyle.values().firstOrNull { it.name == prefs.getString("hair", "") } ?: HairStyle.BUZZ
+        hairStyle = HairStyle.values().firstOrNull { it.name == prefs.getString("hair", "") } ?: HairStyle.SWEPT
         val hairSpinner = findViewById<android.widget.Spinner>(R.id.hair_spinner)
         setupHairSpinner(hairSpinner, hairStyle) { h ->
             hairStyle = h
@@ -606,7 +606,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val center = if (isSelfie) FloatArray(3) else headCenter!!.copyOf()
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
-        val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle)
+        val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
+            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f)
         lastSettings = settings
         showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
@@ -771,7 +772,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         applyButton.setOnClickListener { applyEdits() }
         findViewById<View>(R.id.edit_reset).setOnClickListener {
             editBars[0].progress = 50
-            for (k in 1..3) editBars[k].progress = 50
+            for (k in 1..3) editBars[k].progress = defaultProgress(k)
         }
         resetShape(HairStyle.BUZZ)
     }
@@ -857,15 +858,73 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         HairStyle.BUN -> "Bun"
     }
 
+    /** Slider position for each editor control's default (face starts [DEFAULT_FACE_Z] in). */
+    private fun defaultProgress(k: Int): Int =
+        if (k == 3) Math.round(50 + 50 * DEFAULT_FACE_Z / FACE_MOVE[2]) else 50
+
+    /** A face position or hairstyle change: rebuild the head shortly after the slider stops, no Apply needed. */
     private fun markDirty() {
         editDirty = true
-        applyButton.isEnabled = true
+        if (state != State.PREVIEW || selfieInput == null) return
+        actionButton.isEnabled = false
+        statusText.removeCallbacks(liveRebuild)
+        statusText.postDelayed(liveRebuild, 300)
+    }
+
+    private var rebuildJob: kotlinx.coroutines.Job? = null
+    private var rebuildQueued = false
+    private val liveRebuild = Runnable { startLiveRebuild() }
+
+    /** Rebuilds the selfie head in the background while the current model stays on screen, then swaps it in. */
+    private fun startLiveRebuild() {
+        if (state != State.PREVIEW) return
+        if (rebuildJob?.isActive == true) { rebuildQueued = true; return }
+        val input = selfieInput ?: return
+        val settings = lastSettings.copy(
+            hairStyle = editHair,
+            faceOffsetX = faceOffset[0], faceOffsetY = faceOffset[1], faceOffsetZ = faceOffset[2],
+        )
+        editDirty = false
+        actionButton.isEnabled = false
+        progressBar.visibility = View.VISIBLE
+        progressBar.progress = 0
+        rebuildJob = lifecycleScope.launch(Dispatchers.Default) {
+            var error: String? = null
+            try {
+                val result = HeadScanPipeline(settings).runSelfie(input.first, input.second, input.third, photoSource()) { msg, p ->
+                    runOnUiThread { if (state == State.PREVIEW) { showStatus("Updating head…\n$msg"); progressBar.progress = (p * 100).toInt() } }
+                }
+                withContext(Dispatchers.Main) {
+                    if (state == State.PREVIEW) {
+                        lastSettings = settings
+                        pendingResult = result
+                        previewView.show(result)
+                        previewView.setTransform(shapeSize, 0f, 0f, 0f)
+                        colorSliders.visibility = if (result.canRecolorHair) View.VISIBLE else View.GONE
+                        refreshHairColor()
+                    }
+                }
+            } catch (e: Throwable) {
+                error = e.message ?: e.javaClass.simpleName
+            }
+            withContext(Dispatchers.Main) {
+                if (state != State.PREVIEW) return@withContext
+                if (rebuildQueued) {
+                    rebuildQueued = false
+                    startLiveRebuild()
+                } else {
+                    progressBar.visibility = View.GONE
+                    actionButton.isEnabled = true
+                    showStatus(if (error != null) "Couldn't update: $error. Try a smaller move." else previewText(pendingResult))
+                }
+            }
+        }
     }
 
     /** Puts every editor control back to neutral (used for a brand-new scan result). */
     private fun resetShape(hair: HairStyle) {
         suppressEditEvents = true
-        editBars.forEach { it.progress = 51; it.progress = 50 }   // force a change event so labels update
+        editBars.forEachIndexed { k, b -> b.progress = 51; b.progress = 50; b.progress = defaultProgress(k) }   // force change events so labels update
         editHair = hair
         editHairSpinner.setSelection(HairStyle.values().indexOf(hair))
         suppressEditEvents = false
@@ -960,7 +1019,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val selfieEdits = selfieInput != null
         for (k in 1..3) (editBars[k].parent as View).visibility = if (selfieEdits) View.VISIBLE else View.GONE
         editHairGroup.visibility = if (selfieEdits) View.VISIBLE else View.GONE
-        applyButton.visibility = if (selfieEdits) View.VISIBLE else View.GONE
+        applyButton.visibility = View.GONE   // edits apply live
         editPanel.visibility = View.VISIBLE
         colorSliders.visibility = if (result.canRecolorHair) View.VISIBLE else View.GONE
         if (fresh) {
@@ -972,11 +1031,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         actionButton.isEnabled = true
         secondaryButton.text = "Discard"
         secondaryButton.visibility = View.VISIBLE
+        showStatus(previewText(result))
+    }
+
+    private fun previewText(result: ScanResult?): String {
         val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
-        showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin. " +
-            (if (selfieInput != null) "Move your face on the head or change the hairstyle, then tap Apply changes. " +
+        return "Preview · ${result?.triangleCount ?: 0} triangles · ${result?.textureSize ?: 0}px texture · $style\nDrag to spin. " +
+            (if (selfieInput != null) "Move your face on the head or change the hairstyle; the head updates by itself. " +
                 "The side sliders change hair colour and tone. " else "") +
-            "Save it with a name, or discard it.")
+            "Save it with a name, or discard it."
     }
 
     private fun enterDone(message: String) {
@@ -994,6 +1057,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private fun resetScan() {
         val wasRunning = state == State.CAPTURING || state == State.AIM
+        statusText.removeCallbacks(liveRebuild)
+        rebuildQueued = false
         finishRequested.set(false)
         secondaryButton.isEnabled = true
         if (wasRunning) surfaceView.onPause()
@@ -1044,7 +1109,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         /** How far the face can be moved on the head: ±2 cm sideways, ±3 cm up/down, ±2 cm in/out. */
         /** Hair colour slider positions below this mean "natural colour". */
         private const val HUE_NATURAL = 20
-        private val FACE_MOVE = floatArrayOf(0.02f, 0.03f, 0.02f)
+        private val FACE_MOVE = floatArrayOf(0.02f, 0.03f, 0.04f)
+        /** New selfie heads start with the face 20 mm in. */
+        private const val DEFAULT_FACE_Z = -0.02f
         private const val LOW_TRIANGLES = 1500
         private const val HIGH_TRIANGLES = 3500
     }
