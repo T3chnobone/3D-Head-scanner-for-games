@@ -9,7 +9,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Hair added to the generic head in Selfie mode. */
-enum class HairStyle { SWEPT, SPIKY, SLICKED_BACK, CURTAINS, FAUX_HAWK, LONG_LOCKS, BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
+enum class HairStyle { CLASSIC_PART, CLASSIC_SLICK, CLASSIC_TOUSLED, SWEPT, SPIKY, SLICKED_BACK, CURTAINS, FAUX_HAWK, LONG_LOCKS, BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
 
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
@@ -39,6 +39,11 @@ class SelfieHead(
     private val neckCz: Float
     val neckBottom: Float
     val chinY get() = minY
+
+    private companion object {
+        /** Part position for the classic side part, as a fraction of the head half-width (+X side). */
+        const val PART_X = 0.35f
+    }
 
     // Height field of the face surface (max z per x/y cell) + blend weight toward the face border.
     private val cell = 0.0015f
@@ -180,8 +185,11 @@ class SelfieHead(
     }
 
     /** 0..1: how much of the scalp at this point is covered by hair (soft hairline, never on the face). */
-    private fun scalpCoverage(x: Float, y: Float, z: Float): Float =
-        smoothstep(-0.004f, 0.004f, y - hairlineY(x, z)) * (1f - faceMask(x, y, z))
+    private fun scalpCoverage(x: Float, y: Float, z: Float): Float {
+        // Classic styles get a wider, painted-looking fade at the hairline.
+        val soft = if (isClassic) 0.009f else 0.004f
+        return smoothstep(-soft, soft * 0.6f, y - hairlineY(x, z)) * (1f - faceMask(x, y, z))
+    }
 
     /** Hair thickness grown out from the scalp for the chosen style (metres). */
     fun hairThickness(x: Float, y: Float, z: Float): Float {
@@ -225,6 +233,19 @@ class SelfieHead(
             // under-layer beneath the locks
             HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.LONG_LOCKS -> 0.006f + 0.010f * smoothstep(0.2f, 0.9f, u)
             HairStyle.SPIKY -> 0.006f + 0.006f * smoothstep(0.2f, 0.9f, u)
+            // Classic shells: one smooth helmet, detail is painted in the texture.
+            HairStyle.CLASSIC_PART -> {
+                val big = smoothstep(0.3f * rx, -0.6f * rx, lx)      // fuller on the side the hair is combed over to
+                val g = (lx - PART_X * rx) / 0.006f
+                val part = 0.003f * exp(-g * g) * smoothstep(0.35f, 0.7f, u) * smoothstep(-0.5f, 0.2f, w)
+                0.007f + 0.008f * smoothstep(0.1f, 0.8f, u) + 0.004f * big * smoothstep(0.0f, 0.6f, u) +
+                    0.004f * smoothstep(0.3f, 0.8f, w) * smoothstep(0.4f, 0.85f, u) - part
+            }
+            HairStyle.CLASSIC_SLICK -> 0.006f + 0.006f * smoothstep(0.1f, 0.8f, u) + 0.004f * smoothstep(0.4f, 0.9f, w) * smoothstep(0.5f, 0.9f, u)
+            HairStyle.CLASSIC_TOUSLED -> {
+                val bump = kotlin.math.sin(lx * 140f + 1.3f) * kotlin.math.sin(z * 120f) * kotlin.math.sin(y * 110f + 0.7f)
+                0.009f + 0.008f * smoothstep(0.1f, 0.8f, u) + 0.003f * bump * smoothstep(0.2f, 0.7f, u)
+            }
             HairStyle.SLICKED_BACK -> 0.005f + 0.007f * smoothstep(0.2f, 0.9f, u)
             HairStyle.FAUX_HAWK -> {
                 val g = lx / 0.036f
@@ -594,6 +615,56 @@ class SelfieHead(
         val edge = 1f - 0.45f * smoothstep(0.5f, 1f, abs(a))
         return (0.93f + 0.07f * strands) * sheen * edge
     }
+
+    // ------------------------------------------------------------------ classic painted hair
+
+    val isClassic get() = hairStyle == HairStyle.CLASSIC_PART || hairStyle == HairStyle.CLASSIC_SLICK || hairStyle == HairStyle.CLASSIC_TOUSLED
+
+    /**
+     * Painted hair shading for the classic (helmet) styles, around 1: comb lines following the style's
+     * direction, a soft baked sheen across the crown, darker roots near the hairline and a part line.
+     * Null for other styles.
+     */
+    fun paintedHair(x: Float, y: Float, z: Float): Float? {
+        if (!isClassic) return null
+        val lx = x - headCx; val ly = y - headCy; val lz = z - headCz
+        val u = (ly / ry).coerceIn(-1f, 1f)
+        val w = (lz / rz).coerceIn(-1.2f, 1.2f)
+        // Coordinate that is constant along a strand.
+        val across = when (hairStyle) {
+            HairStyle.CLASSIC_PART -> {
+                // Combed sideways away from the part; on the sides it falls downward, curving back.
+                val top = lz + 0.25f * (lx - PART_X * rx)
+                val side = kotlin.math.atan2(lx, lz) * 0.06f + 0.2f * ly
+                top * smoothstep(0.1f, 0.55f, u) + side * (1f - smoothstep(0.1f, 0.55f, u))
+            }
+            HairStyle.CLASSIC_SLICK -> {
+                // Combed straight back over the top; swept back horizontally on the sides.
+                val top = kotlin.math.atan2(lx, ly + 0.06f) * 0.07f
+                top * smoothstep(0.0f, 0.5f, u) + ly * (1f - smoothstep(0.0f, 0.5f, u))
+            }
+            else -> {
+                // Tousled: strands swirl out from the crown in short clumps.
+                kotlin.math.atan2(lx, lz + 0.03f) * 0.05f + 0.012f * kotlin.math.sin(ly * 90f + lx * 60f)
+            }
+        }
+        val wobble = 0.0015f * kotlin.math.sin(x * 230f + y * 170f + z * 90f)
+        val f = (across + wobble) * 1400f
+        val strands = 0.55f * kotlin.math.sin(f) + 0.3f * kotlin.math.sin(f * 2.3f + 1.1f) + 0.15f * kotlin.math.sin(f * 5.1f + 0.4f)
+        // Baked sheen band, a little in front of the crown.
+        val sb = (u - 0.72f + 0.1f * w) / 0.12f
+        val sheen = 1f + 0.22f * exp(-sb * sb)
+        // Darker towards the hairline (roots and shadow), like the painted hair of the era.
+        val edge = 0.82f + 0.18f * smoothstep(0f, 0.025f, y - hairlineYPublic(x, z))
+        var shade = (0.92f + 0.1f * strands) * sheen * edge
+        if (hairStyle == HairStyle.CLASSIC_PART) {
+            val g = (lx - PART_X * rx) / 0.0025f
+            shade *= 1f - 0.45f * exp(-g * g) * smoothstep(0.4f, 0.75f, u) * smoothstep(-0.4f, 0.2f, w)
+        }
+        return shade
+    }
+
+    private fun hairlineYPublic(x: Float, z: Float) = hairlineY(x, z)
 
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {

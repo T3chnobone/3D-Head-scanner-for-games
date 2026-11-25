@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.14**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.15**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -15,7 +15,7 @@ low-poly 3D model:
 
 After processing, a 3D preview appears (drag to spin). A **Size** slider (50–150%) scales the whole model. In Selfie mode you can also move **your face on the head** (±2 cm sideways, ±3 cm up/down, ±4 cm in/out; the face starts 2 cm in) and change the **hairstyle**. The head rebuilds around your face by itself a moment after you let go of a slider, with no Apply button. Tap **Save** to name and save it, or **Discard**.
 
-In Selfie mode you can also pick a hairstyle for the generic head: **Swept locks** (chunky, pointed game-style clumps from a crown whorl with a diagonal side fringe), **Spiky**, **Slicked back**, **Curtains** (centre parting), **Faux hawk**, **Long locks** (past the jaw), **Buzz cut**, **Crew cut**, **Short hair**, **Side parting**, **Flat top**, **Mohawk**, **Afro**, **Bob** or **Bun**. Two sliders at the side of the preview change the hair **colour** (natural, or anywhere on the rainbow) and **tone** (dark to light), live. Hair is grown out of the scalp as part of the one mesh, so the triangle limit (1500 / 3500) always includes it. The head and neck skin tone is measured from your cheeks and forehead, and the hair colour from just above your forehead.
+In Selfie mode you can also pick a hairstyle for the generic head: **Classic side part**, **Classic slicked back**, **Classic tousled** (smooth low-poly hair shells with strands, sheen and a soft hairline painted into the texture, in the style of mid-2000s Source-engine games), **Swept locks** (chunky, pointed game-style clumps from a crown whorl with a diagonal side fringe), **Spiky**, **Slicked back**, **Curtains** (centre parting), **Faux hawk**, **Long locks** (past the jaw), **Buzz cut**, **Crew cut**, **Short hair**, **Side parting**, **Flat top**, **Mohawk**, **Afro**, **Bob** or **Bun**. Two sliders at the side of the preview change the hair **colour** (natural, or anywhere on the rainbow) and **tone** (dark to light), live. Hair is grown out of the scalp as part of the one mesh, so the triangle limit (1500 / 3500) always includes it. The head and neck skin tone is measured from your cheeks and forehead, and the hair colour from just above your forehead.
 
 Everything runs on the phone. No server, no account.
 

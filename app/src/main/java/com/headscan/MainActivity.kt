@@ -841,6 +841,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun hairLabel(h: HairStyle) = when (h) {
+        HairStyle.CLASSIC_PART -> "Classic side part"
+        HairStyle.CLASSIC_SLICK -> "Classic slicked back"
+        HairStyle.CLASSIC_TOUSLED -> "Classic tousled"
         HairStyle.SWEPT -> "Swept locks"
         HairStyle.SPIKY -> "Spiky"
         HairStyle.SLICKED_BACK -> "Slicked back"

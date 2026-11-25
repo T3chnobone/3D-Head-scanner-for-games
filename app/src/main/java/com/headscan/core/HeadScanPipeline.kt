@@ -203,6 +203,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             }
             val n = kotlin.math.sin(x * 371f + y * 533f + z * 197f) * 0.5f     // cheap variation
             head.lockShade(x, y, z)?.let { return scale(hair, it * (0.97f + 0.03f * n)) }
+            head.paintedHair(x, y, z)?.let { return scale(hair, it * (0.98f + 0.02f * n)) }
             return scale(hair, 0.9f + 0.12f * strands + 0.05f * n)
         }
 

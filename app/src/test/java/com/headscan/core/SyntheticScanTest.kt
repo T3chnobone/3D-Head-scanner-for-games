@@ -253,6 +253,16 @@ class SyntheticScanTest {
     }
 
     @Test
+    fun classicHair() {
+        skinMode = true
+        try {
+            for (h in listOf(HairStyle.CLASSIC_PART, HairStyle.CLASSIC_SLICK, HairStyle.CLASSIC_TOUSLED))
+                selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = h, outName = "classic_$h")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "classic_blonde", recolor = null to 0.75f)
+        } finally { skinMode = false; images.clear() }
+    }
+
+    @Test
     fun scaledResult() {
         val m = Mesh(floatArrayOf(0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f, 0f), intArrayOf(0, 1, 2))
         val r = ScanResult(m, MeshOps.vertexNormals(m), false, UvAtlas(1, 64), IntArray(64 * 64), 64)
