@@ -122,7 +122,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private lateinit var hairGroup: RadioGroup
     private lateinit var editPanel: View
     private lateinit var editBars: List<SeekBar>
-    private val shapeScale = floatArrayOf(1f, 1f, 1f, 1f)   // size, width, height, depth
+    private var shapeSize = 1f
+    private val shapeOffset = floatArrayOf(0f, 0f, 0f)       // metres along X (right), Y (up), Z (forward)
     private lateinit var previewView: PreviewView
     private var pendingResult: ScanResult? = null
     private var pendingCheck: android.graphics.Bitmap? = null
@@ -598,7 +599,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setMessage("Name for this model:")
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
-                save(result.scaled(shapeScale[0] * shapeScale[1], shapeScale[0] * shapeScale[2], shapeScale[0] * shapeScale[3]), input.text.toString())
+                save(result.transformed(shapeSize, shapeSize, shapeSize, shapeOffset[0], shapeOffset[1], shapeOffset[2]), input.text.toString())
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -630,22 +631,27 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    /** Size / width / height / depth sliders shown with the preview. */
+    /** Size slider and X / Y / Z move sliders shown with the preview. */
     private fun setupShapeEditor() {
         editPanel = findViewById(R.id.edit_panel)
         val ids = listOf(R.id.edit_size, R.id.edit_width, R.id.edit_height, R.id.edit_depth)
         val labels = listOf(R.id.edit_size_label, R.id.edit_width_label, R.id.edit_height_label, R.id.edit_depth_label)
-        val names = listOf("Size", "Width", "Height", "Depth")
+        val names = listOf("Size", "Move X", "Move Y", "Move Z")
         editBars = ids.map { findViewById(it) }
         editBars.forEachIndexed { i, bar ->
             val label = findViewById<TextView>(labels[i])
             bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                    // Size: 50%..150%, axes: 70%..130%
-                    val range = if (i == 0) 1.0f else 0.6f
-                    shapeScale[i] = 1f + (progress - 50) / 50f * range / 2f
-                    label.text = "${names[i]} ${(shapeScale[i] * 100).toInt()}%"
-                    previewView.setShapeScale(shapeScale[0] * shapeScale[1], shapeScale[0] * shapeScale[2], shapeScale[0] * shapeScale[3])
+                    val t = (progress - 50) / 50f          // -1..1
+                    if (i == 0) {
+                        shapeSize = 1f + t * 0.5f            // 50%..150%
+                        label.text = "Size ${(shapeSize * 100).toInt()}%"
+                    } else {
+                        shapeOffset[i - 1] = t * MAX_MOVE    // ±15 cm
+                        val cm = Math.round(shapeOffset[i - 1] * 100)
+                        label.text = "${names[i]} ${if (cm > 0) "+" else ""}$cm cm"
+                    }
+                    previewView.setTransform(shapeSize, shapeOffset[0], shapeOffset[1], shapeOffset[2])
                 }
                 override fun onStartTrackingTouch(sb: SeekBar) {}
                 override fun onStopTrackingTouch(sb: SeekBar) {}
@@ -744,7 +750,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         secondaryButton.text = "Discard"
         secondaryButton.visibility = View.VISIBLE
         val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
-        showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin, adjust the shape below, then save it with a name or discard it.")
+        showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin, resize or move it with the sliders (X = left/right, Y = up/down, Z = forward/back), then save it with a name or discard it.")
     }
 
     private fun enterDone(message: String) {
@@ -805,6 +811,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val MIN_INTERVAL_MS = 250L
         private const val MAX_KEYFRAMES = 60
         private const val MIN_KEYFRAMES = 8
+        private const val MAX_MOVE = 0.15f
         private const val LOW_TRIANGLES = 1500
         private const val HIGH_TRIANGLES = 3500
     }

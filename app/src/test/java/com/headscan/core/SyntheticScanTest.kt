@@ -221,6 +221,8 @@ class SyntheticScanTest {
         val r = ScanResult(m, MeshOps.vertexNormals(m), false, UvAtlas(1, 64), IntArray(64 * 64), 64)
         val s = r.scaled(2f, 3f, 1f)
         assertTrue(s.mesh.positions[3] == 2f && s.mesh.positions[7] == 3f && r.mesh.positions[3] == 1f)
+        val moved = r.transformed(1f, 1f, 1f, 0.1f, -0.05f, 0.02f)
+        assertTrue(moved.mesh.positions[3] == 1.1f && moved.mesh.positions[1] == -0.05f && moved.mesh.positions[2] == 0.02f)
     }
 
     fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ) {

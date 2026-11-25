@@ -39,8 +39,12 @@ class PreviewView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     @Volatile private var sy = 1f
     @Volatile private var sz = 1f
 
-    /** Live stretch of the model (the saved mesh is stretched the same way). */
-    fun setShapeScale(x: Float, y: Float, z: Float) { sx = x; sy = y; sz = z }
+    @Volatile private var ox = 0f
+    @Volatile private var oy = 0f
+    @Volatile private var oz = 0f
+
+    /** Live size + position of the model (the saved mesh gets the same change). */
+    fun setTransform(scale: Float, dx: Float, dy: Float, dz: Float) { sx = scale; sy = scale; sz = scale; ox = dx; oy = dy; oz = dz }
 
     @Volatile private var yaw = 0f
     @Volatile private var pitch = 0f
@@ -127,13 +131,15 @@ class PreviewView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (!dragging && lastFrameMs != 0L) yaw += (now - lastFrameMs) * 0.02f
         lastFrameMs = now
 
-        val dist = m.radius * 3.6f * max(1f, max(sx, max(sy, sz)))
+        val dist = m.radius * 4.2f * max(1f, sx)
         Matrix.setLookAtM(view, 0, 0f, 0f, dist, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.setIdentityM(model, 0)
         Matrix.rotateM(model, 0, pitch, 1f, 0f, 0f)
         Matrix.rotateM(model, 0, yaw, 0f, 1f, 0f)
+        // Camera stays aimed at the original centre, so moving the head is visible.
+        // p' = scale * p + offset (same as the saved mesh), viewed around the original centre.
+        Matrix.translateM(model, 0, ox - m.cx, oy - m.cy, oz - m.cz)
         Matrix.scaleM(model, 0, sx, sy, sz)
-        Matrix.translateM(model, 0, -m.cx, -m.cy, -m.cz)
         Matrix.multiplyMM(tmp, 0, view, 0, model, 0)
         Matrix.multiplyMM(mvp, 0, proj, 0, tmp, 0)
 

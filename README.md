@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.5**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.6**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -13,7 +13,7 @@ low-poly 3D model:
 | Format | `<name>.obj` + `<name>.mtl` + `<name>_texture.png` |
 | Location | `Downloads/HeadScans/<name>/` (Share button also offered) |
 
-After processing, a 3D preview appears (drag to spin). Sliders let you change the overall **size** (50–150%) and stretch the **width**, **height** and **depth** (70–130%) before saving. Tap **Save** to name and save it, or **Discard**.
+After processing, a 3D preview appears (drag to spin). Sliders let you change the overall **size** (50–150%) and **move** the head along X (left/right), Y (up/down) and Z (forward/back) by up to ±15 cm before saving. The saved OBJ uses the moved position. Tap **Save** to name and save it, or **Discard**.
 
 In Selfie mode you can also pick a hairstyle for the generic head: **Buzz cut**, **Short hair** or **Long hair** (shoulder-length). The hair is coloured from the hair seen above your forehead.
 

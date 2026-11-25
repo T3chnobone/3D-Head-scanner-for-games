@@ -55,10 +55,15 @@ class ScanResult(
     fun mtlText(textureFileName: String = "head_texture.png"): String = ObjWriter.mtl(HeadScanPipeline.MATERIAL, textureFileName)
 
     /** A copy with the mesh stretched about the head origin (texture and UVs unchanged). */
-    fun scaled(sx: Float, sy: Float, sz: Float): ScanResult {
-        if (sx == 1f && sy == 1f && sz == 1f) return this
+    fun scaled(sx: Float, sy: Float, sz: Float): ScanResult = transformed(sx, sy, sz, 0f, 0f, 0f)
+
+    /** A copy scaled about the head origin, then moved by (dx, dy, dz) metres. */
+    fun transformed(sx: Float, sy: Float, sz: Float, dx: Float, dy: Float, dz: Float): ScanResult {
+        if (sx == 1f && sy == 1f && sz == 1f && dx == 0f && dy == 0f && dz == 0f) return this
         val p = mesh.positions.copyOf()
-        for (v in 0 until mesh.vertexCount) { p[3 * v] *= sx; p[3 * v + 1] *= sy; p[3 * v + 2] *= sz }
+        for (v in 0 until mesh.vertexCount) {
+            p[3 * v] = p[3 * v] * sx + dx; p[3 * v + 1] = p[3 * v + 1] * sy + dy; p[3 * v + 2] = p[3 * v + 2] * sz + dz
+        }
         val m = Mesh(p, mesh.faces)
         val n = if (flatShaded) MeshOps.faceNormals(m) else MeshOps.vertexNormals(m)
         return ScanResult(m, n, flatShaded, atlas, texture, textureSize)
