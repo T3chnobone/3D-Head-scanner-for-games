@@ -1,0 +1,531 @@
+package com.headscan
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
+import android.net.Uri
+import android.opengl.GLES20
+import android.opengl.GLSurfaceView
+import android.os.Build
+import android.os.Bundle
+import android.os.SystemClock
+import android.view.Surface
+import android.view.View
+import android.view.WindowManager
+import android.widget.Button
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import com.google.ar.core.ArCoreApk
+import com.google.ar.core.Camera
+import com.google.ar.core.CameraConfig
+import com.google.ar.core.CameraConfigFilter
+import com.google.ar.core.Config
+import com.google.ar.core.Frame
+import com.google.ar.core.Session
+import com.google.ar.core.TrackingFailureReason
+import com.google.ar.core.TrackingState
+import com.google.ar.core.exceptions.CameraNotAvailableException
+import com.google.ar.core.exceptions.NotYetAvailableException
+import com.google.ar.core.exceptions.UnavailableApkTooOldException
+import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
+import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException
+import com.google.ar.core.exceptions.UnavailableSdkTooOldException
+import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
+import com.headscan.core.ColorSource
+import com.headscan.core.HeadScanPipeline
+import com.headscan.core.Keyframe
+import com.headscan.core.RgbImage
+import com.headscan.core.ScanException
+import com.headscan.core.ScanSettings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.Executors
+import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.opengles.GL10
+import kotlin.math.acos
+import kotlin.math.atan2
+import kotlin.math.sqrt
+
+/**
+ * Guided head scan:
+ *  1. AIM      - centre the crosshair on the person's nose (30-80 cm away) and tap Start.
+ *  2. CAPTURE  - walk slowly around the head; a keyframe (depth + photo + pose) is stored every ~9 degrees.
+ *  3. PROCESS  - depth fusion -> surface -> 1500-triangle mesh -> 1024 px texture -> OBJ/MTL/PNG.
+ *  4. DONE     - files are in Downloads/HeadScans/..., with a Share button.
+ */
+class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
+
+    private enum class State { AIM, CAPTURING, PROCESSING, DONE }
+
+    private lateinit var surfaceView: GLSurfaceView
+    private lateinit var coverageView: CoverageView
+    private lateinit var statusText: TextView
+    private lateinit var actionButton: Button
+    private lateinit var secondaryButton: Button
+    private lateinit var progressBar: ProgressBar
+
+    private var session: Session? = null
+    private var installRequested = false
+    private val background = BackgroundRenderer()
+    private var viewportWidth = 0
+    private var viewportHeight = 0
+    @Volatile private var viewportChanged = false
+
+    @Volatile private var state = State.AIM
+    @Volatile private var startRequested = false
+
+    // Capture data (touched on the GL thread while capturing).
+    private val keyframes = ArrayList<Keyframe>()
+    private val keyframeDirs = ArrayList<FloatArray>()
+    private var headCenter: FloatArray? = null
+    private var frontAngle = 0f
+    private var lastCaptureMs = 0L
+    private val coverage = BooleanArray(COVERAGE_BINS)
+    private var highViews = 0
+    private val jpegWriter = Executors.newSingleThreadExecutor()
+    private lateinit var workDir: File
+    private var lastHint = ""
+
+    private var savedUris: List<Uri> = emptyList()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        surfaceView = findViewById(R.id.surface_view)
+        coverageView = findViewById(R.id.coverage_view)
+        statusText = findViewById(R.id.status_text)
+        actionButton = findViewById(R.id.action_button)
+        secondaryButton = findViewById(R.id.secondary_button)
+        progressBar = findViewById(R.id.progress)
+
+        surfaceView.preserveEGLContextOnPause = true
+        surfaceView.setEGLContextClientVersion(2)
+        surfaceView.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        surfaceView.setRenderer(this)
+        surfaceView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+
+        workDir = File(cacheDir, "capture").apply { deleteRecursively(); mkdirs() }
+
+        actionButton.setOnClickListener {
+            when (state) {
+                State.AIM -> { startRequested = true; showStatus("Measuring distance to the face…") }
+                State.CAPTURING -> finishCapture()
+                State.DONE -> resetScan()
+                State.PROCESSING -> Unit
+            }
+        }
+        secondaryButton.setOnClickListener {
+            when (state) {
+                State.CAPTURING -> resetScan()
+                State.DONE -> shareResult()
+                else -> Unit
+            }
+        }
+        enterAim()
+    }
+
+    // ---------------------------------------------------------------- lifecycle
+
+    override fun onResume() {
+        super.onResume()
+        if (state == State.PROCESSING || state == State.DONE) return
+        if (session == null) {
+            try {
+                if (ArCoreApk.getInstance().requestInstall(this, !installRequested) == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
+                    installRequested = true
+                    return
+                }
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
+                    return
+                }
+                val s = Session(this)
+                if (!s.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                    s.close()
+                    showFatal("This phone does not support the ARCore Depth API, which the scanner needs.")
+                    return
+                }
+                chooseCameraConfig(s)
+                val config = Config(s).apply {
+                    depthMode = Config.DepthMode.AUTOMATIC
+                    focusMode = Config.FocusMode.AUTO
+                    updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                    planeFindingMode = Config.PlaneFindingMode.DISABLED
+                    lightEstimationMode = Config.LightEstimationMode.DISABLED
+                }
+                s.configure(config)
+                session = s
+            } catch (e: UnavailableUserDeclinedInstallationException) {
+                showFatal("Google Play Services for AR is required. Please install it and reopen the app."); return
+            } catch (e: UnavailableArcoreNotInstalledException) {
+                showFatal("Google Play Services for AR is required. Please install it and reopen the app."); return
+            } catch (e: UnavailableApkTooOldException) {
+                showFatal("Please update Google Play Services for AR."); return
+            } catch (e: UnavailableSdkTooOldException) {
+                showFatal("Please update this app."); return
+            } catch (e: UnavailableDeviceNotCompatibleException) {
+                showFatal("This phone does not support ARCore."); return
+            } catch (e: Exception) {
+                showFatal("Could not start AR: ${e.message}"); return
+            }
+        }
+        try {
+            session?.resume()
+        } catch (e: CameraNotAvailableException) {
+            showFatal("The camera is in use by another app.")
+            session = null
+            return
+        }
+        surfaceView.onResume()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        surfaceView.onPause()
+        session?.pause()
+    }
+
+    override fun onDestroy() {
+        session?.close()
+        session = null
+        jpegWriter.shutdown()
+        super.onDestroy()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CAMERA && (grantResults.isEmpty() || grantResults[0] != PackageManager.PERMISSION_GRANTED)) {
+            Toast.makeText(this, "Camera permission is needed to scan.", Toast.LENGTH_LONG).show()
+            finish()
+        }
+        // On success onResume() runs again and creates the session.
+    }
+
+    /** Prefer a depth-sensor (ToF) config when available, then the largest CPU image (sharper texture). */
+    private fun chooseCameraConfig(s: Session) {
+        val filter = CameraConfigFilter(s).setFacingDirection(CameraConfig.FacingDirection.BACK)
+        val configs = s.getSupportedCameraConfigs(filter)
+        val best = configs
+            .filter { it.imageSize.width <= 1920 }
+            .maxWithOrNull(
+                compareBy<CameraConfig> { if (it.depthSensorUsage == CameraConfig.DepthSensorUsage.REQUIRE_AND_USE) 1 else 0 }
+                    .thenBy { it.imageSize.width * it.imageSize.height }
+            )
+        if (best != null) s.cameraConfig = best
+    }
+
+    // ---------------------------------------------------------------- GL renderer
+
+    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        background.createOnGlThread()
+    }
+
+    override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+        GLES20.glViewport(0, 0, width, height)
+        viewportWidth = width
+        viewportHeight = height
+        viewportChanged = true
+    }
+
+    override fun onDrawFrame(gl: GL10?) {
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
+        val s = session ?: return
+        if (viewportChanged) {
+            s.setDisplayGeometry(displayRotation(), viewportWidth, viewportHeight)
+            viewportChanged = false
+        }
+        s.setCameraTextureName(background.textureId)
+        val frame = try { s.update() } catch (e: Exception) { return }
+        background.draw(frame)
+
+        val camera = frame.camera
+        if (camera.trackingState != TrackingState.TRACKING) {
+            hint(trackingHint(camera.trackingFailureReason))
+            return
+        }
+        when (state) {
+            State.AIM -> if (startRequested) {
+                startRequested = false
+                tryStartCapture(frame, camera)
+            } else {
+                hint("Point the camera at the face from 30–80 cm, put the crosshair on the nose, then tap Start.\n\nThe person being scanned must keep perfectly still.")
+            }
+            State.CAPTURING -> maybeCaptureKeyframe(frame, camera)
+            else -> Unit
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun displayRotation(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.rotation ?: Surface.ROTATION_0
+        else windowManager.defaultDisplay.rotation
+
+    private fun trackingHint(reason: TrackingFailureReason): String = when (reason) {
+        TrackingFailureReason.INSUFFICIENT_LIGHT -> "Too dark – add more light."
+        TrackingFailureReason.EXCESSIVE_MOTION -> "Moving too fast – slow down."
+        TrackingFailureReason.INSUFFICIENT_FEATURES -> "Can't see enough detail – include more of the room in view."
+        TrackingFailureReason.CAMERA_UNAVAILABLE -> "Camera unavailable."
+        else -> "Move the phone slowly to start tracking…"
+    }
+
+    // ---------------------------------------------------------------- capture logic (GL thread)
+
+    private fun tryStartCapture(frame: Frame, camera: Camera) {
+        val depthImage = try { frame.acquireDepthImage16Bits() } catch (e: NotYetAvailableException) {
+            hint("Depth not ready yet – move the phone slightly and tap Start again."); return
+        }
+        val d = depthImage.use { ImageUtils.centerDepth(ImageUtils.depthToShorts(it), it.width, it.height) }
+        if (d < 0.2f || d > 1.2f) {
+            hint("Couldn't measure the face (got ${"%.2f".format(d)} m). Stay 30–80 cm away with the crosshair on the nose and tap Start again.")
+            return
+        }
+        val pose = camera.pose
+        val t = pose.translation
+        val z = pose.zAxis
+        val fwd = floatArrayOf(-z[0], -z[1], -z[2])
+        val hit = floatArrayOf(t[0] + fwd[0] * d, t[1] + fwd[1] * d, t[2] + fwd[2] * d)
+        // Push the centre ~10 cm into the head along the horizontal view direction.
+        var hx = fwd[0]; var hz = fwd[2]
+        val hl = sqrt(hx * hx + hz * hz).coerceAtLeast(1e-4f)
+        hx /= hl; hz /= hl
+        headCenter = floatArrayOf(hit[0] + hx * HEAD_DEPTH, hit[1] + 0.02f, hit[2] + hz * HEAD_DEPTH)
+        frontAngle = atan2(-hx, -hz)
+        keyframes.clear(); keyframeDirs.clear(); coverage.fill(false); highViews = 0
+        lastCaptureMs = 0
+        state = State.CAPTURING
+        runOnUiThread { enterCapturing() }
+        captureKeyframe(frame, camera)
+    }
+
+    private fun maybeCaptureKeyframe(frame: Frame, camera: Camera) {
+        val c = headCenter ?: return
+        val t = camera.pose.translation
+        val dx = t[0] - c[0]; val dy = t[1] - c[1]; val dz = t[2] - c[2]
+        val dist = sqrt(dx * dx + dy * dy + dz * dz)
+        val dir = floatArrayOf(dx / dist, dy / dist, dz / dist)
+        val z = camera.pose.zAxis
+        // angle between camera forward (-Z) and the direction to the head centre
+        val aim = Math.toDegrees(acos((-(z[0] * -dir[0] + z[1] * -dir[1] + z[2] * -dir[2])).coerceIn(-1f, 1f).toDouble()))
+        when {
+            dist < MIN_DIST -> { hint(captureHint("Too close – step back a little.")); return }
+            dist > MAX_DIST -> { hint(captureHint("Too far – move closer.")); return }
+            aim > MAX_AIM_DEG -> { hint(captureHint("Keep the head in the middle of the screen.")); return }
+        }
+        hint(captureHint(null))
+        val now = SystemClock.uptimeMillis()
+        if (now - lastCaptureMs < MIN_INTERVAL_MS || keyframes.size >= MAX_KEYFRAMES) return
+        var minAngle = 180.0
+        for (k in keyframeDirs) {
+            val dot = (k[0] * dir[0] + k[1] * dir[1] + k[2] * dir[2]).coerceIn(-1f, 1f)
+            minAngle = minOf(minAngle, Math.toDegrees(acos(dot.toDouble())))
+        }
+        if (minAngle >= NEW_VIEW_DEG) captureKeyframe(frame, camera)
+    }
+
+    private fun captureHint(problem: String?): String {
+        val covered = coverage.count { it }
+        val sb = StringBuilder()
+        sb.append("Captured ${keyframes.size} views · ${covered * 100 / COVERAGE_BINS}% of the way around\n")
+        sb.append(problem ?: when {
+            covered < COVERAGE_BINS -> "Walk slowly around the head, keeping it centred. Fill the ring."
+            highViews < 4 -> "Great! Now raise the phone and look down at the top of the head."
+            else -> "Done? Tap Finish."
+        })
+        return sb.toString()
+    }
+
+    private fun captureKeyframe(frame: Frame, camera: Camera) {
+        val c = headCenter ?: return
+        val depthImage = try { frame.acquireDepthImage16Bits() } catch (e: NotYetAvailableException) { return }
+        val cameraImage = try { frame.acquireCameraImage() } catch (e: NotYetAvailableException) { depthImage.close(); return }
+        class Raw(val depth: ShortArray, val dw: Int, val dh: Int, val nv21: ByteArray, val cw: Int, val ch: Int)
+        val raw = try {
+            if (cameraImage.format != ImageFormat.YUV_420_888) null
+            else Raw(
+                ImageUtils.depthToShorts(depthImage), depthImage.width, depthImage.height,
+                ImageUtils.yuvToNv21(cameraImage), cameraImage.width, cameraImage.height,
+            )
+        } finally {
+            depthImage.close()
+            cameraImage.close()
+        } ?: return
+        val depth = raw.depth; val dw = raw.dw; val dh = raw.dh
+        val nv21 = raw.nv21; val cw = raw.cw; val ch = raw.ch
+        val camToWorld = FloatArray(16).also { camera.pose.toMatrix(it, 0) }
+        val worldToCam = FloatArray(16).also { camera.pose.inverse().toMatrix(it, 0) }
+        val depthIntr = ImageUtils.toIntrinsics(camera.textureIntrinsics).scaledTo(dw, dh)
+        val colorIntr = ImageUtils.toIntrinsics(camera.imageIntrinsics)
+
+        val file = File(workDir, "kf_%03d.jpg".format(keyframes.size))
+        jpegWriter.execute {
+            FileOutputStream(file).use { YuvImage(nv21, ImageFormat.NV21, cw, ch, null).compressToJpeg(Rect(0, 0, cw, ch), 92, it) }
+        }
+        keyframes.add(Keyframe(camToWorld, worldToCam, depth, dw, dh, depthIntr, colorIntr, file.absolutePath))
+
+        val dx = camToWorld[12] - c[0]; val dy = camToWorld[13] - c[1]; val dz = camToWorld[14] - c[2]
+        val dist = sqrt(dx * dx + dy * dy + dz * dz)
+        keyframeDirs.add(floatArrayOf(dx / dist, dy / dist, dz / dist))
+        val elevation = Math.toDegrees(Math.asin((dy / dist).toDouble()))
+        if (elevation > 35) highViews++
+        if (elevation < 60) {
+            var az = Math.toDegrees((atan2(dx, dz) - frontAngle).toDouble())
+            az = ((az % 360) + 360) % 360
+            coverage[((az / 360.0) * COVERAGE_BINS).toInt().coerceIn(0, COVERAGE_BINS - 1)] = true
+        }
+        lastCaptureMs = SystemClock.uptimeMillis()
+        val snapshot = coverage.copyOf()
+        val count = keyframes.size
+        runOnUiThread {
+            coverageView.update(snapshot, crosshair = true)
+            actionButton.isEnabled = count >= MIN_KEYFRAMES
+        }
+    }
+
+    // ---------------------------------------------------------------- processing
+
+    private fun finishCapture() {
+        if (keyframes.size < MIN_KEYFRAMES) {
+            Toast.makeText(this, "Capture at least $MIN_KEYFRAMES views first.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        state = State.PROCESSING
+        surfaceView.onPause()   // blocks until the GL thread is paused, so the keyframe list is stable
+        session?.pause()
+        val frames = ArrayList(keyframes)
+        val center = headCenter!!.copyOf()
+        enterProcessing()
+
+        lifecycleScope.launch(Dispatchers.Default) {
+            try {
+                jpegWriter.submit(Runnable {}).get()   // wait for pending JPEG writes
+                val colorSource = ColorSource { kf ->
+                    val bmp = BitmapFactory.decodeFile(kf.colorRef)
+                        ?: throw ScanException("Could not read captured photo ${kf.colorRef}")
+                    val px = IntArray(bmp.width * bmp.height)
+                    bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+                    RgbImage(bmp.width, bmp.height, px).also { bmp.recycle() }
+                }
+                val result = HeadScanPipeline(ScanSettings()).run(
+                    frames, center, colorSource, ScanExporter.TEXTURE_NAME, ScanExporter.MTL_NAME,
+                ) { msg, p -> runOnUiThread { showStatus("Building 3D model…\n$msg"); progressBar.progress = (p * 100).toInt() } }
+                val saved = ScanExporter.save(this@MainActivity, result)
+                withContext(Dispatchers.Main) {
+                    savedUris = saved.uris
+                    enterDone("Saved ${result.triangleCount} triangles, ${result.textureSize}×${result.textureSize} texture.\n\n" +
+                        "Folder: ${saved.location}\n${ScanExporter.OBJ_NAME}, ${ScanExporter.MTL_NAME}, ${ScanExporter.TEXTURE_NAME}\n\n" +
+                        "Keep all three files together when copying them.")
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    savedUris = emptyList()
+                    enterDone("Scan failed: ${e.message ?: e.javaClass.simpleName}\n\nTry again with better light, slower movement and the head kept centred.")
+                }
+            }
+        }
+    }
+
+    private fun shareResult() {
+        if (savedUris.isEmpty()) return
+        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = "*/*"
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(savedUris))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, "Share head scan"))
+    }
+
+    // ---------------------------------------------------------------- UI states
+
+    private fun enterAim() {
+        state = State.AIM
+        progressBar.visibility = View.GONE
+        secondaryButton.visibility = View.GONE
+        actionButton.text = "Start"
+        actionButton.isEnabled = true
+        coverageView.update(BooleanArray(0), crosshair = true)
+    }
+
+    private fun enterCapturing() {
+        actionButton.text = "Finish"
+        actionButton.isEnabled = false
+        secondaryButton.text = "Cancel"
+        secondaryButton.visibility = View.VISIBLE
+        coverageView.update(coverage.copyOf(), crosshair = true)
+    }
+
+    private fun enterProcessing() {
+        actionButton.isEnabled = false
+        secondaryButton.visibility = View.GONE
+        progressBar.visibility = View.VISIBLE
+        progressBar.progress = 0
+        coverageView.update(BooleanArray(0), crosshair = false)
+        showStatus("Building 3D model…")
+    }
+
+    private fun enterDone(message: String) {
+        state = State.DONE
+        progressBar.visibility = View.GONE
+        actionButton.text = "New scan"
+        actionButton.isEnabled = true
+        secondaryButton.text = "Share"
+        secondaryButton.visibility = if (savedUris.isEmpty()) View.GONE else View.VISIBLE
+        showStatus(message)
+    }
+
+    private fun resetScan() {
+        val wasRunning = state == State.CAPTURING || state == State.AIM
+        if (wasRunning) surfaceView.onPause()
+        keyframes.clear(); keyframeDirs.clear(); coverage.fill(false)
+        headCenter = null
+        workDir.listFiles()?.forEach { it.delete() }
+        lastHint = ""
+        enterAim()
+        if (wasRunning) {
+            surfaceView.onResume()
+        } else {
+            try { session?.resume() } catch (e: CameraNotAvailableException) { showFatal("The camera is in use by another app."); return }
+            surfaceView.onResume()
+        }
+    }
+
+    private fun hint(text: String) {
+        if (text == lastHint) return
+        lastHint = text
+        runOnUiThread { if (state == State.AIM || state == State.CAPTURING) statusText.text = text }
+    }
+
+    private fun showStatus(text: String) { statusText.text = text }
+
+    private fun showFatal(text: String) {
+        statusText.text = text
+        actionButton.isEnabled = false
+    }
+
+    companion object {
+        private const val REQUEST_CAMERA = 1
+        private const val COVERAGE_BINS = 24
+        private const val HEAD_DEPTH = 0.10f       // nose tip to head centre, metres
+        private const val MIN_DIST = 0.25f
+        private const val MAX_DIST = 1.0f
+        private const val MAX_AIM_DEG = 25.0
+        private const val NEW_VIEW_DEG = 9.0
+        private const val MIN_INTERVAL_MS = 250L
+        private const val MAX_KEYFRAMES = 60
+        private const val MIN_KEYFRAMES = 8
+    }
+}
