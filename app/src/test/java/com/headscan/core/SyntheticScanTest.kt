@@ -129,14 +129,14 @@ class SyntheticScanTest {
         val t0 = System.currentTimeMillis()
         // Estimated centre slightly off, like a real tap would be.
         val est = floatArrayOf(c[0] + 0.01f, c[1] + 0.015f, c[2] - 0.01f)
-        val res = HeadScanPipeline(ScanSettings(targetTriangles = target)).run(kfs, est, { images[it.colorRef]!! }, "head_texture.png", "head.mtl") { s, p ->
+        val res = HeadScanPipeline(ScanSettings(targetTriangles = target)).run(kfs, est, { images[it.colorRef]!! }) { s, p ->
             if (s.startsWith("Fusing depth 1/") || !s.contains('/')) println("  [${(p * 100).toInt()}%] $s")
         }
         println("Pipeline took ${System.currentTimeMillis() - t0} ms: ${res.triangleCount} tris, ${res.vertexCount} verts")
 
         val out = File("build/scan_rear_$target").apply { mkdirs() }
-        File(out, "head.obj").writeText(res.objText)
-        File(out, "head.mtl").writeText(res.mtlText)
+        File(out, "head.obj").writeText(res.objText())
+        File(out, "head.mtl").writeText(res.mtlText())
         // Texture as a binary PPM (java.awt isn't available in Android unit tests).
         File(out, "head_texture.ppm").outputStream().buffered().use { o ->
             o.write("P6\n${res.textureSize} ${res.textureSize}\n255\n".toByteArray())
@@ -145,7 +145,7 @@ class SyntheticScanTest {
 
         // Parse back the OBJ and check geometry + texture against ground truth.
         val vs = ArrayList<FloatArray>(); val vts = ArrayList<FloatArray>(); val fs = ArrayList<IntArray>()
-        res.objText.lineSequence().forEach { line ->
+        res.objText().lineSequence().forEach { line ->
             val p = line.split(" ")
             when (p[0]) {
                 "v" -> vs.add(floatArrayOf(p[1].toFloat(), p[2].toFloat(), p[3].toFloat()))
@@ -206,7 +206,10 @@ class SyntheticScanTest {
     fun selfieHighQuality() = selfie(3500)
 
     /** Selfie mode: synthetic ARCore-style face mesh + front-camera photos from a head turning left/right/up/down. */
-    fun selfie(target: Int) {
+    @Test
+    fun selfieGoldenEyeStyle() = selfie(1500, HeadStyle.GOLDENEYE)
+
+    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC) {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
@@ -236,21 +239,21 @@ class SyntheticScanTest {
             val m = world.camToWorld.copyOf(); m[12] -= c[0]; m[13] -= c[1]; m[14] -= c[2]
             kfs.add(Keyframe(m, invertRigid(m), ShortArray(1), 1, 1, world.depthIntrinsics.scaledTo(1, 1), world.colorIntrinsics, world.colorRef))
         }
-        val res = HeadScanPipeline(ScanSettings(targetTriangles = target)).runSelfie(
-            kfs, fv, tris.toIntArray(), { images[it.colorRef]!! }, "head_texture.png", "head.mtl",
+        val res = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style)).runSelfie(
+            kfs, fv, tris.toIntArray(), { images[it.colorRef]!! },
         )
         println("Selfie $target: ${res.triangleCount} tris, ${res.vertexCount} verts")
         assertTrue(res.triangleCount in (target - 100)..target, "triangle count ${res.triangleCount}")
-        val out = File("build/scan_selfie_$target").apply { mkdirs() }
-        File(out, "head.obj").writeText(res.objText)
-        File(out, "head.mtl").writeText(res.mtlText)
+        val out = File("build/scan_selfie_${target}_$style").apply { mkdirs() }
+        File(out, "head.obj").writeText(res.objText())
+        File(out, "head.mtl").writeText(res.mtlText())
         File(out, "head_texture.ppm").outputStream().buffered().use { o ->
             o.write("P6\n${res.textureSize} ${res.textureSize}\n255\n".toByteArray())
             for (px in res.texture) { o.write((px shr 16) and 255); o.write((px shr 8) and 255); o.write(px and 255) }
         }
         // Face region should match the real surface closely.
         var err = 0.0; var cnt = 0
-        res.objText.lineSequence().filter { it.startsWith("v ") }.forEach { line ->
+        res.objText().lineSequence().filter { it.startsWith("v ") }.forEach { line ->
             val p = line.split(" ").drop(1).map { it.toFloat() }
             if (p[2] > 0.03f && abs(p[0]) < 0.05f && p[1] > -0.08f && p[1] < 0.05f) {
                 // output origin is the generic head centre; recover face-frame coordinates is not needed for
@@ -259,5 +262,11 @@ class SyntheticScanTest {
             }
         }
         assertTrue(cnt > 20, "face vertices present")
+        if (style == HeadStyle.GOLDENEYE) {
+            assertTrue(res.objText().contains("s off"), "flat shading")
+            assertTrue(res.objText().lines().count { it.startsWith("vn ") } == res.triangleCount, "one normal per face")
+        }
+        val (pos, nrm, st) = res.previewArrays()
+        assertTrue(pos.size == res.triangleCount * 9 && nrm.size == pos.size && st.size == res.triangleCount * 6)
     }
 }

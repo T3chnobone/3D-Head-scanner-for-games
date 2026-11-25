@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.2**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.3**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -9,8 +9,11 @@ low-poly 3D model:
 |---|---|
 | Geometry | Low: 1500 triangles, High: 3500 triangles (chosen on the start screen) |
 | Texture | 1024 × 1024 PNG |
-| Format | `head.obj` + `head.mtl` + `head_texture.png` |
-| Location | `Downloads/HeadScans/HeadScan_<date>_<time>/` (Share button also offered) |
+| Style | Realistic (smooth) or GoldenEye style (faceted flat-shaded polygons, punchy posterised photo face) |
+| Format | `<name>.obj` + `<name>.mtl` + `<name>_texture.png` |
+| Location | `Downloads/HeadScans/<name>/` (Share button also offered) |
+
+After processing, a 3D preview appears (drag to spin). Tap **Save** to name and save it, or **Discard**.
 
 Everything runs on the phone. No server, no account.
 

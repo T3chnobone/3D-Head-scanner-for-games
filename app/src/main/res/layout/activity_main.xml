@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black">
@@ -8,6 +9,12 @@
         android:id="@+id/surface_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
+
+    <com.headscan.PreviewView
+        android:id="@+id/preview_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
 
     <com.headscan.CoverageView
         android:id="@+id/coverage_view"
@@ -31,7 +38,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
         android:layout_marginEnd="20dp"
-        android:layout_marginBottom="200dp"
+        android:layout_marginBottom="250dp"
         android:alpha="0.8"
         android:shadowColor="#000000"
         android:shadowRadius="3"
@@ -39,6 +46,7 @@
         android:textSize="12sp" />
 
     <LinearLayout
+        android:id="@+id/bottom_panel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
@@ -102,6 +110,32 @@
                     android:buttonTint="@android:color/white"
                     android:text="High · 3500 triangles"
                     android:textColor="@android:color/white" />
+            </RadioGroup>
+
+            <RadioGroup
+                android:id="@+id/style_group"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/style_realistic"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:buttonTint="@android:color/white"
+                    android:text="Realistic"
+                    android:textColor="@android:color/white" />
+
+                <RadioButton
+                    android:id="@+id/style_goldeneye"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:buttonTint="#D4AF37"
+                    android:text="GoldenEye style"
+                    android:textColor="#D4AF37"
+                    android:textStyle="bold" />
             </RadioGroup>
         </LinearLayout>
 

@@ -121,6 +121,21 @@ object MeshOps {
         }
     }
 
+    /** Unit normal per face (for flat shading). */
+    fun faceNormals(mesh: Mesh): FloatArray {
+        val p = mesh.positions
+        val n = FloatArray(mesh.faceCount * 3)
+        for (f in 0 until mesh.faceCount) {
+            val a = mesh.faces[3 * f]; val b = mesh.faces[3 * f + 1]; val c = mesh.faces[3 * f + 2]
+            val ux = p[3 * b] - p[3 * a]; val uy = p[3 * b + 1] - p[3 * a + 1]; val uz = p[3 * b + 2] - p[3 * a + 2]
+            val vx = p[3 * c] - p[3 * a]; val vy = p[3 * c + 1] - p[3 * a + 1]; val vz = p[3 * c + 2] - p[3 * a + 2]
+            val nx = uy * vz - uz * vy; val ny = uz * vx - ux * vz; val nz = ux * vy - uy * vx
+            val l = len3(nx, ny, nz)
+            if (l > 1e-12f) { n[3 * f] = nx / l; n[3 * f + 1] = ny / l; n[3 * f + 2] = nz / l } else n[3 * f + 1] = 1f
+        }
+        return n
+    }
+
     /** Area-weighted vertex normals. */
     fun vertexNormals(mesh: Mesh): FloatArray {
         val p = mesh.positions

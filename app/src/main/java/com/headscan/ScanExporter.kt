@@ -15,11 +15,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Saves head.obj, head.mtl and head_texture.png into Downloads/HeadScans/<scan name>/. */
+/** Saves <name>.obj, <name>.mtl and <name>_texture.png into Downloads/HeadScans/<name>/. */
 object ScanExporter {
-    const val OBJ_NAME = "head.obj"
-    const val MTL_NAME = "head.mtl"
-    const val TEXTURE_NAME = "head_texture.png"
+    fun defaultName(): String = "HeadScan_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+
+    /** Makes a user-typed name safe for file names. */
+    fun sanitize(input: String): String {
+        val cleaned = input.trim().replace(Regex("[^A-Za-z0-9 _-]"), "").replace(' ', '_').take(40)
+        return cleaned.ifEmpty { defaultName() }
+    }
 
     class Saved(val location: String, val uris: List<Uri>)
 
@@ -27,13 +31,14 @@ object ScanExporter {
 
     const val CHECK_NAME = "alignment_check.jpg"
 
-    fun save(context: Context, result: ScanResult, alignmentCheck: Bitmap? = null): Saved {
-        val name = "HeadScan_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    fun save(context: Context, result: ScanResult, requestedName: String, alignmentCheck: Bitmap? = null): Saved {
+        val name = uniqueName(context, sanitize(requestedName))
+        val objName = "$name.obj"; val mtlName = "$name.mtl"; val texName = "${name}_texture.png"
         val texture = Bitmap.createBitmap(result.texture, result.textureSize, result.textureSize, Bitmap.Config.ARGB_8888)
         val writers = listOf(
-            Entry(OBJ_NAME, "application/octet-stream") { out -> out.write(result.objText.toByteArray()) },
-            Entry(MTL_NAME, "application/octet-stream") { out -> out.write(result.mtlText.toByteArray()) },
-            Entry(TEXTURE_NAME, "image/png") { out -> texture.compress(Bitmap.CompressFormat.PNG, 100, out) },
+            Entry(objName, "application/octet-stream") { out -> out.write(result.objText(mtlName).toByteArray()) },
+            Entry(mtlName, "application/octet-stream") { out -> out.write(result.mtlText(texName).toByteArray()) },
+            Entry(texName, "image/png") { out -> texture.compress(Bitmap.CompressFormat.PNG, 100, out) },
         ) + listOfNotNull(alignmentCheck?.let { bmp ->
             Entry(CHECK_NAME, "image/jpeg") { out -> bmp.compress(Bitmap.CompressFormat.JPEG, 90, out) }
         })
@@ -44,6 +49,28 @@ object ScanExporter {
             texture.recycle()
             alignmentCheck?.recycle()
         }
+    }
+
+    /** Appends _2, _3… if a scan folder with this name already exists (so files never get renamed by Android). */
+    private fun uniqueName(context: Context, base: String): String {
+        var name = base
+        var i = 2
+        while (exists(context, name)) name = "${base}_${i++}"
+        return name
+    }
+
+    private fun exists(context: Context, name: String): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val path = Environment.DIRECTORY_DOWNLOADS + "/HeadScans/" + name + "/"
+            context.contentResolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.MediaColumns._ID),
+                MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                arrayOf(path), null,
+            )?.use { return it.count > 0 }
+            return false
+        }
+        return File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "HeadScans/$name").exists()
     }
 
     private fun saveMediaStore(context: Context, name: String, files: List<Entry>): Saved {

@@ -4,7 +4,8 @@ import java.util.Locale
 
 /** Writes Wavefront OBJ + MTL text for a textured mesh with a per-face UV atlas. */
 object ObjWriter {
-    fun obj(mesh: Mesh, normals: FloatArray, atlas: UvAtlas, mtlFileName: String, materialName: String): String {
+    /** [normals] are per vertex, or per face when [flat] (flat shading, no smoothing groups). */
+    fun obj(mesh: Mesh, normals: FloatArray, atlas: UvAtlas, mtlFileName: String, materialName: String, flat: Boolean = false): String {
         val sb = StringBuilder(mesh.vertexCount * 40 + mesh.faceCount * 120)
         sb.append("# Head scan - ").append(mesh.faceCount).append(" triangles, ")
             .append(mesh.vertexCount).append(" vertices\n")
@@ -18,17 +19,19 @@ object ObjWriter {
         for (f in 0 until mesh.faceCount) for (c in 0 until 3) {
             sb.append(String.format(Locale.US, "vt %.6f %.6f\n", atlas.objU(f, c), atlas.objV(f, c)))
         }
-        for (v in 0 until mesh.vertexCount) {
+        val nCount = normals.size / 3
+        for (v in 0 until nCount) {
             sb.append(String.format(Locale.US, "vn %.4f %.4f %.4f\n", normals[3 * v], normals[3 * v + 1], normals[3 * v + 2]))
         }
         sb.append("usemtl ").append(materialName).append('\n')
-        sb.append("s 1\n")
+        sb.append(if (flat) "s off\n" else "s 1\n")
         for (f in 0 until mesh.faceCount) {
             sb.append('f')
             for (c in 0 until 3) {
                 val v = mesh.faces[3 * f + c] + 1
                 val t = 3 * f + c + 1
-                sb.append(' ').append(v).append('/').append(t).append('/').append(v)
+                val n = if (flat) f + 1 else v
+                sb.append(' ').append(v).append('/').append(t).append('/').append(n)
             }
             sb.append('\n')
         }

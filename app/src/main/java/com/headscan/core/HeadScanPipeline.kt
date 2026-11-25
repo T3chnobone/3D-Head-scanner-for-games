@@ -22,17 +22,53 @@ data class ScanSettings(
     val collarStart: Float = 0.16f,
     val minWeight: Float = 1.5f,
     val smoothingIterations: Int = 8,
+    val style: HeadStyle = HeadStyle.REALISTIC,
 )
 
+/** Visual style of the generated head. */
+enum class HeadStyle {
+    /** Smooth shading, natural photo texture. */
+    REALISTIC,
+    /** Late-90s shooter look: faceted flat-shaded polygons, punchy posterised photo face. */
+    GOLDENEYE,
+}
+
 class ScanResult(
-    val objText: String,
-    val mtlText: String,
+    /** Head-frame mesh: metres, +Y up, face toward +Z. */
+    val mesh: Mesh,
+    /** Per-vertex normals (smooth) or per-face normals (when [flatShaded]). */
+    val normals: FloatArray,
+    val flatShaded: Boolean,
+    val atlas: UvAtlas,
     /** ARGB, row 0 = top, textureSize x textureSize. */
     val texture: IntArray,
     val textureSize: Int,
-    val triangleCount: Int,
-    val vertexCount: Int,
-)
+) {
+    val triangleCount get() = mesh.faceCount
+    val vertexCount get() = mesh.vertexCount
+
+    fun objText(mtlFileName: String = "head.mtl"): String =
+        ObjWriter.obj(mesh, normals, atlas, mtlFileName, HeadScanPipeline.MATERIAL, flatShaded)
+
+    fun mtlText(textureFileName: String = "head_texture.png"): String = ObjWriter.mtl(HeadScanPipeline.MATERIAL, textureFileName)
+
+    /** Un-indexed triangle arrays for real-time preview: xyz, normal, texture st (t = 0 at the top row). */
+    fun previewArrays(): Triple<FloatArray, FloatArray, FloatArray> {
+        val n = mesh.faceCount * 3
+        val pos = FloatArray(n * 3); val nrm = FloatArray(n * 3); val st = FloatArray(n * 2)
+        for (f in 0 until mesh.faceCount) for (c in 0 until 3) {
+            val v = mesh.faces[3 * f + c]
+            val o = (3 * f + c)
+            for (k in 0 until 3) {
+                pos[3 * o + k] = mesh.positions[3 * v + k]
+                nrm[3 * o + k] = if (flatShaded) normals[3 * f + k] else normals[3 * v + k]
+            }
+            st[2 * o] = atlas.pixelUv[f * 6 + c * 2] / atlas.size
+            st[2 * o + 1] = atlas.pixelUv[f * 6 + c * 2 + 1] / atlas.size
+        }
+        return Triple(pos, nrm, st)
+    }
+}
 
 class ScanException(message: String) : Exception(message)
 
@@ -46,8 +82,6 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         keyframes: List<Keyframe>,
         headCenter: FloatArray,
         colorSource: ColorSource,
-        textureFileName: String,
-        mtlFileName: String,
         progress: (String, Float) -> Unit = { _, _ -> },
     ): ScanResult {
         if (keyframes.size < 4) throw ScanException("Need at least 4 captured views, got ${keyframes.size}.")
@@ -67,7 +101,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         var fx = front.camX - cx; var fz = front.camZ - cz
         val fl = sqrt(fx * fx + fz * fz)
         if (fl > 1e-6f) { fx /= fl; fz /= fl } else { fx = 0f; fz = 1f }
-        return finishMesh(vol, keyframes, cx, cy, cz, atan2(fx, fz), colorSource, textureFileName, mtlFileName, null, crop = true, progress)
+        return finishMesh(vol, keyframes, cx, cy, cz, atan2(fx, fz), colorSource, null, crop = true, progress)
     }
 
     /**
@@ -79,8 +113,6 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         faceVertices: FloatArray,
         faceTriangles: IntArray,
         colorSource: ColorSource,
-        textureFileName: String,
-        mtlFileName: String,
         progress: (String, Float) -> Unit = { _, _ -> },
     ): ScanResult {
         if (keyframes.size < 3) throw ScanException("Need at least 3 captured views, got ${keyframes.size}.")
@@ -88,8 +120,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         val head = SelfieHead(faceVertices, faceTriangles)
         val vol = head.buildVolume(0.003f, 0.012f)
         val hair = HairFill(head)
-        return finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource,
-            textureFileName, mtlFileName, hair, crop = false, progress, smoothing = 3)
+        return finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource, hair, crop = false, progress, smoothing = 3)
     }
 
     /** Picks hair / skin colours for parts of the generic head that no photo saw. */
@@ -109,8 +140,6 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         cx: Float, cy: Float, cz: Float,
         frontAngle: Float,
         colorSource: ColorSource,
-        textureFileName: String,
-        mtlFileName: String,
         hairFill: HairFill?,
         crop: Boolean,
         progress: (String, Float) -> Unit,
@@ -156,16 +185,16 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             baker.addView(kf, colorSource.load(kf))
         }
         hairFill?.prepare(baker)
-        val texture = if (hairFill != null) baker.finish { x, y, z -> hairFill.color(x, y, z) } else baker.finish()
+        var texture = if (hairFill != null) baker.finish { x, y, z -> hairFill.color(x, y, z) } else baker.finish()
+        val flat = s.style == HeadStyle.GOLDENEYE
+        if (flat) texture = RetroStyle.apply(texture)
 
         // 5. Move into a head-centred frame, face toward +Z, and write OBJ.
         progress("Writing OBJ", 0.97f)
         MeshOps.transformToHeadFrame(mesh, cx, cy, cz, frontAngle)
-        val outNormals = MeshOps.vertexNormals(mesh)
-        val obj = ObjWriter.obj(mesh, outNormals, atlas, mtlFileName, MATERIAL)
-        val mtl = ObjWriter.mtl(MATERIAL, textureFileName)
+        val outNormals = if (flat) MeshOps.faceNormals(mesh) else MeshOps.vertexNormals(mesh)
         progress("Done", 1f)
-        return ScanResult(obj, mtl, texture, s.textureSize, mesh.faceCount, mesh.vertexCount)
+        return ScanResult(mesh, outNormals, flat, atlas, texture, s.textureSize)
     }
 
     companion object {

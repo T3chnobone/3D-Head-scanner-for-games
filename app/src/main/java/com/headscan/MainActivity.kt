@@ -17,6 +17,13 @@ import android.view.Surface
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.EditText
+import androidx.appcompat.app.AlertDialog
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import android.view.ViewGroup
+import com.headscan.core.HeadStyle
+import com.headscan.core.ScanResult
 import android.widget.ProgressBar
 import android.widget.RadioGroup
 import android.widget.TextView
@@ -69,7 +76,7 @@ import kotlin.math.sqrt
  */
 class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
-    private enum class State { AIM, CAPTURING, PROCESSING, DONE }
+    private enum class State { AIM, CAPTURING, PROCESSING, PREVIEW, DONE }
 
     private lateinit var surfaceView: GLSurfaceView
     private lateinit var coverageView: CoverageView
@@ -108,6 +115,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     @Volatile private var selfieMode = false
     private var targetTriangles = LOW_TRIANGLES
     private lateinit var selfie: SelfieCapture
+    private var headStyle = HeadStyle.REALISTIC
+    private lateinit var previewView: PreviewView
+    private var pendingResult: ScanResult? = null
+    private var pendingCheck: android.graphics.Bitmap? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,6 +133,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         progressBar = findViewById(R.id.progress)
         findViewById<TextView>(R.id.version_text).text = "v${BuildConfig.VERSION_NAME}"
         optionsPanel = findViewById(R.id.options_panel)
+        previewView = findViewById(R.id.preview_view)
+        applySystemBarInsets()
+        headStyle = if (prefs.getString("style", "") == HeadStyle.GOLDENEYE.name) HeadStyle.GOLDENEYE else HeadStyle.REALISTIC
+        val styleGroup = findViewById<RadioGroup>(R.id.style_group)
+        styleGroup.check(if (headStyle == HeadStyle.GOLDENEYE) R.id.style_goldeneye else R.id.style_realistic)
+        styleGroup.setOnCheckedChangeListener { _, id ->
+            headStyle = if (id == R.id.style_goldeneye) HeadStyle.GOLDENEYE else HeadStyle.REALISTIC
+            prefs.edit().putString("style", headStyle.name).apply()
+        }
 
         selfieMode = prefs.getBoolean("selfie", false)
         targetTriangles = prefs.getInt("triangles", LOW_TRIANGLES)
@@ -151,6 +171,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             when (state) {
                 State.AIM -> { startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Measuring distance to the face…") }
                 State.CAPTURING -> finishCapture()
+                State.PREVIEW -> askNameAndSave()
                 State.DONE -> resetScan()
                 State.PROCESSING -> Unit
             }
@@ -158,6 +179,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         secondaryButton.setOnClickListener {
             when (state) {
                 State.CAPTURING -> resetScan()
+                State.PREVIEW -> confirmDiscard()
                 State.DONE -> shareResult()
                 else -> Unit
             }
@@ -169,7 +191,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     override fun onResume() {
         super.onResume()
-        if (state == State.PROCESSING || state == State.DONE) return
+        if (state == State.PREVIEW || state == State.DONE) previewView.onResume()
+        if (state != State.AIM && state != State.CAPTURING) return
         startArSession()
     }
 
@@ -251,6 +274,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     override fun onPause() {
         super.onPause()
         surfaceView.onPause()
+        previewView.onPause()
         session?.pause()
     }
 
@@ -508,7 +532,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val center = if (isSelfie) FloatArray(3) else headCenter!!.copyOf()
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
-        val settings = ScanSettings(targetTriangles = targetTriangles)
+        val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle)
         enterProcessing()
 
         lifecycleScope.launch(Dispatchers.Default) {
@@ -527,25 +551,89 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 val pipeline = HeadScanPipeline(settings)
                 val result = if (isSelfie) {
                     if (faceVerts == null || faceTris == null) throw ScanException("No face mesh was captured.")
-                    pipeline.runSelfie(frames, faceVerts, faceTris, colorSource, ScanExporter.TEXTURE_NAME, ScanExporter.MTL_NAME, onProgress)
+                    pipeline.runSelfie(frames, faceVerts, faceTris, colorSource, onProgress)
                 } else {
-                    pipeline.run(frames, center, colorSource, ScanExporter.TEXTURE_NAME, ScanExporter.MTL_NAME, onProgress)
+                    pipeline.run(frames, center, colorSource, onProgress)
                 }
                 // Selfie mode: also save a photo with the face mesh drawn on it, to check the texture lines up.
                 val check = if (isSelfie && faceVerts != null) AlignmentCheck.draw(frames.first(), faceVerts) else null
-                val saved = ScanExporter.save(this@MainActivity, result, check)
-                withContext(Dispatchers.Main) {
-                    savedUris = saved.uris
-                    enterDone("Saved ${result.triangleCount} triangles, ${result.textureSize}×${result.textureSize} texture.\n\n" +
-                        "Folder: ${saved.location}\n${ScanExporter.OBJ_NAME}, ${ScanExporter.MTL_NAME}, ${ScanExporter.TEXTURE_NAME}\n\n" +
-                        "Keep all three files together when copying them.")
-                }
+                withContext(Dispatchers.Main) { enterPreview(result, check) }
             } catch (e: Throwable) {
                 withContext(Dispatchers.Main) {
                     savedUris = emptyList()
                     enterDone("Scan failed: ${e.message ?: e.javaClass.simpleName}\n\nTry again with better light, slower movement and the head kept centred.")
                 }
             }
+        }
+    }
+
+    private fun askNameAndSave() {
+        val result = pendingResult ?: return
+        val input = EditText(this).apply {
+            setText(ScanExporter.defaultName())
+            setSelectAllOnFocus(true)
+            isSingleLine = true
+        }
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = android.widget.FrameLayout(this).apply { setPadding(pad, pad / 2, pad, 0); addView(input) }
+        AlertDialog.Builder(this)
+            .setTitle("Save head scan")
+            .setMessage("Name for this model:")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ -> save(result, input.text.toString()) }
+            .setNegativeButton("Cancel", null)
+            .show()
+        input.requestFocus()
+    }
+
+    private fun save(result: ScanResult, name: String) {
+        actionButton.isEnabled = false
+        secondaryButton.isEnabled = false
+        showStatus("Saving…")
+        val check = pendingCheck
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val saved = ScanExporter.save(this@MainActivity, result, name, check)
+                withContext(Dispatchers.Main) {
+                    pendingCheck = null
+                    savedUris = saved.uris
+                    secondaryButton.isEnabled = true
+                    enterDone("Saved to ${saved.location}\n\n${result.triangleCount} triangles, ${result.textureSize}×${result.textureSize} texture. " +
+                        "Keep the .obj, .mtl and .png together when copying them.")
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    actionButton.isEnabled = true
+                    secondaryButton.isEnabled = true
+                    showStatus("Couldn't save: ${e.message}. Try again.")
+                }
+            }
+        }
+    }
+
+    private fun confirmDiscard() {
+        AlertDialog.Builder(this)
+            .setTitle("Discard this scan?")
+            .setMessage("The model will not be saved.")
+            .setPositiveButton("Discard") { _, _ -> resetScan() }
+            .setNegativeButton("Keep", null)
+            .show()
+    }
+
+    /** Pads the on-screen controls so they clear the status bar and Android's navigation buttons. */
+    private fun applySystemBarInsets() {
+        val root = findViewById<View>(R.id.root)
+        val bottomPanel = findViewById<View>(R.id.bottom_panel)
+        val version = findViewById<View>(R.id.version_text)
+        val base = (16 * resources.displayMetrics.density).toInt()
+        val versionBase = (version.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            (statusText.layoutParams as ViewGroup.MarginLayoutParams).topMargin = base + bars.top
+            (bottomPanel.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin = base + bars.bottom
+            (version.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin = versionBase + bars.bottom
+            statusText.requestLayout(); bottomPanel.requestLayout(); version.requestLayout()
+            insets
         }
     }
 
@@ -590,6 +678,24 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         showStatus("Building 3D model…")
     }
 
+    private fun enterPreview(result: ScanResult, check: android.graphics.Bitmap?) {
+        state = State.PREVIEW
+        pendingResult = result
+        pendingCheck = check
+        optionsPanel.visibility = View.GONE
+        progressBar.visibility = View.GONE
+        surfaceView.visibility = View.INVISIBLE
+        previewView.visibility = View.VISIBLE
+        previewView.onResume()
+        previewView.show(result)
+        actionButton.text = "Save"
+        actionButton.isEnabled = true
+        secondaryButton.text = "Discard"
+        secondaryButton.visibility = View.VISIBLE
+        val style = if (headStyle == HeadStyle.GOLDENEYE) "GoldenEye style" else "Realistic"
+        showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin. Save it with a name, or discard it.")
+    }
+
     private fun enterDone(message: String) {
         optionsPanel.visibility = View.GONE
         state = State.DONE
@@ -604,6 +710,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private fun resetScan() {
         val wasRunning = state == State.CAPTURING || state == State.AIM
         if (wasRunning) surfaceView.onPause()
+        pendingResult = null
+        pendingCheck?.recycle(); pendingCheck = null
+        previewView.onPause()
+        previewView.visibility = View.GONE
+        surfaceView.visibility = View.VISIBLE
         keyframes.clear(); keyframeDirs.clear(); coverage.fill(false)
         selfie.reset()
         headCenter = null
