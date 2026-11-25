@@ -49,7 +49,20 @@ class ScanResult(
     /** ARGB, row 0 = top, textureSize x textureSize. */
     val texture: IntArray,
     val textureSize: Int,
+    /** Per-texel hair amount 0..1 (Selfie mode), used to recolour the hair; null if not available. */
+    val hairMask: FloatArray? = null,
+    /** The hair colour the texture was painted with (ARGB). */
+    val hairBase: Int = 0,
 ) {
+    val canRecolorHair get() = hairMask != null
+
+    /** A copy with the hair recoloured (see [HairColor.recolor]). */
+    fun withHairColor(hue: Float?, tone: Float): ScanResult {
+        val mask = hairMask ?: return this
+        return ScanResult(mesh, normals, flatShaded, atlas, HairColor.recolor(texture, mask, hairBase, hue, tone),
+            textureSize, hairMask, hairBase)
+    }
+
     val triangleCount get() = mesh.faceCount
     val vertexCount get() = mesh.vertexCount
 
@@ -70,7 +83,7 @@ class ScanResult(
         }
         val m = Mesh(p, mesh.faces)
         val n = if (flatShaded) MeshOps.faceNormals(m) else MeshOps.vertexNormals(m)
-        return ScanResult(m, n, flatShaded, atlas, texture, textureSize)
+        return ScanResult(m, n, flatShaded, atlas, texture, textureSize, hairMask, hairBase)
     }
 
     /** Un-indexed triangle arrays for real-time preview: xyz, normal, texture st (t = 0 at the top row). */
@@ -183,7 +196,11 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             val top = kotlin.math.sin(lx * 900f + kotlin.math.sin(lz * 70f) * 2.5f)
             val side = kotlin.math.sin(kotlin.math.atan2(lx, lz) * 120f + kotlin.math.sin(y * 80f) * 2f)
             val u = ((y - head.headCy) / 0.08f).coerceIn(0f, 1f)
-            val strands = top * u + side * (1 - u)
+            var strands = top * u + side * (1 - u)
+            if (head.hairStyle == HairStyle.AFRO) {
+                // Tight curls instead of straight strands.
+                strands = kotlin.math.sin(x * 650f) * kotlin.math.sin(y * 650f + 1.3f) * kotlin.math.sin(z * 650f + 2.1f) * 1.6f
+            }
             val n = kotlin.math.sin(x * 371f + y * 533f + z * 197f) * 0.5f     // cheap variation
             return scale(hair, 0.9f + 0.12f * strands + 0.05f * n)
         }
@@ -268,7 +285,8 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         MeshOps.transformToHeadFrame(mesh, cx, cy, cz, frontAngle)
         val outNormals = if (flat) MeshOps.faceNormals(mesh) else MeshOps.vertexNormals(mesh)
         progress("Done", 1f)
-        return ScanResult(mesh, outNormals, flat, atlas, texture, s.textureSize)
+        val hairMask = hairFill?.let { hf -> baker.texelMap { x, y, z -> hf.head.hairColorAmount(x, y, z) } }
+        return ScanResult(mesh, outNormals, flat, atlas, texture, s.textureSize, hairMask, hairFill?.hair ?: 0)
     }
 
     companion object {

@@ -9,7 +9,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Hair added to the generic head in Selfie mode. */
-enum class HairStyle { BUZZ, CREW_CUT, SIDE_PART, FLAT_TOP, BOB, BUN }
+enum class HairStyle { BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
 
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
@@ -193,6 +193,21 @@ class SelfieHead(
         val lx = x - headCx
         val t = when (hairStyle) {
             HairStyle.CREW_CUT -> 0.005f + 0.003f * smoothstep(0.4f, 0.9f, u)
+            HairStyle.SHORT -> {
+                // Natural short cut: a little fuller on top, slight forward fringe, tidy at the back.
+                0.007f + 0.006f * smoothstep(0.2f, 0.8f, u) + 0.004f * smoothstep(0.1f, 0.6f, w) * smoothstep(0.4f, 0.8f, u)
+            }
+            HairStyle.MOHAWK -> {
+                // Tall strip from forehead to nape, sides shaved.
+                val g = lx / 0.014f
+                val crest = exp(-g * g * g * g)        // flat-topped strip
+                0.0015f + 0.04f * crest * smoothstep(-0.2f, 0.45f, u) * smoothstep(-0.95f, -0.4f, w) *
+                    (1f - 0.75f * smoothstep(0.2f, 0.75f, w))     // lower at the front so it doesn't overhang
+            }
+            HairStyle.AFRO -> {
+                // Big rounded volume, fullest at the top and sides.
+                (0.03f + 0.022f * smoothstep(-0.3f, 0.6f, u)) * (1f - 0.65f * smoothstep(0.25f, 0.8f, w))
+            }
             HairStyle.SIDE_PART -> {
                 val top = 0.006f + 0.010f * smoothstep(0.15f, 0.8f, u)
                 val quiff = 0.005f * smoothstep(0.2f, 0.7f, w) * smoothstep(0.45f, 0.9f, u)
@@ -238,7 +253,15 @@ class SelfieHead(
     fun hairColorAmount(x: Float, y: Float, z: Float): Float {
         if (extraHairSdf(x, y, z) < 0.004f && genericSdf(x, y, z) > 0.003f) return 1f - faceMask(x, y, z)
         val c = scalpCoverage(x, y, z)
-        return if (hairStyle == HairStyle.BUZZ) c * 0.6f else c
+        return when (hairStyle) {
+            HairStyle.BUZZ -> c * 0.6f
+            HairStyle.MOHAWK -> {
+                // Full colour on the crest, light stubble on the shaved sides.
+                val g = (x - headCx) / 0.016f
+                c * (0.35f + 0.65f * exp(-g * g * g * g))
+            }
+            else -> c
+        }
     }
 
     /** Head + neck + hair, before the face is merged in. */
@@ -269,7 +292,7 @@ class SelfieHead(
 
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
-        val pad = if (hairStyle == HairStyle.BUZZ) 0.02f else 0.05f
+        val pad = when (hairStyle) { HairStyle.BUZZ -> 0.02f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
         val x0 = min(headCx - rx, minX) - pad; val x1 = max(headCx + rx, maxX) + pad
         val y0 = neckBottom; val y1 = max(headCy + ry, maxY) + pad
         val z0 = headCz - rz - pad; val z1 = max(noseZ, headCz + rz) + pad

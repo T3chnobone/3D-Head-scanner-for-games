@@ -252,6 +252,33 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
         }
     }
 
+    /** Evaluates [f] at every texel's surface point into a size x size map, padded outward like the texture. */
+    fun texelMap(f: (Float, Float, Float) -> Float): FloatArray {
+        val out = FloatArray(size * size)
+        val has = BooleanArray(size * size)
+        for (t in texelIndex.indices) {
+            out[texelIndex[t]] = f(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])
+            has[texelIndex[t]] = true
+        }
+        repeat(6) {
+            val next = has.copyOf()
+            for (y in 0 until size) for (x in 0 until size) {
+                val i = y * size + x
+                if (has[i]) continue
+                var sum = 0f; var n = 0
+                for (dy in -1..1) for (dx in -1..1) {
+                    val xx = x + dx; val yy = y + dy
+                    if (xx < 0 || yy < 0 || xx >= size || yy >= size) continue
+                    val j = yy * size + xx
+                    if (has[j]) { sum += out[j]; n++ }
+                }
+                if (n > 0) { out[i] = sum / n; next[i] = true }
+            }
+            System.arraycopy(next, 0, has, 0, has.size)
+        }
+        return out
+    }
+
     private fun dilate(img: IntArray, filled: BooleanArray, passes: Int) {
         val next = BooleanArray(filled.size)
         repeat(passes) {

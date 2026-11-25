@@ -233,6 +233,10 @@ class SyntheticScanTest {
         try {
             for (h in HairStyle.values()) selfie(1500, hair = h, outName = "gallery_$h")
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, outName = "gallery_GES_SIDE_PART")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.MOHAWK, outName = "gallery_MOHAWK_green", recolor = 120f to 0.1f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SHORT, outName = "gallery_SHORT_blonde", recolor = null to 0.8f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.AFRO, outName = "gallery_AFRO_black", recolor = null to -0.7f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.BOB, outName = "gallery_BOB_red", recolor = 0f to 0.0f)
         } finally { skinMode = false; images.clear() }
     }
 
@@ -249,7 +253,8 @@ class SyntheticScanTest {
     @Test
     fun selfieFaceMoved() = selfie(1500, hair = HairStyle.CREW_CUT, offset = floatArrayOf(0.015f, -0.02f, 0.02f))
 
-    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3), outName: String? = null) {
+    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3), outName: String? = null,
+               recolor: Pair<Float?, Float>? = null) {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
@@ -279,11 +284,16 @@ class SyntheticScanTest {
             val m = world.camToWorld.copyOf(); m[12] -= c[0]; m[13] -= c[1]; m[14] -= c[2]
             kfs.add(Keyframe(m, invertRigid(m), ShortArray(1), 1, 1, world.depthIntrinsics.scaledTo(1, 1), world.colorIntrinsics, world.colorRef))
         }
-        val res = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair,
+        val res0 = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair,
             faceOffsetX = offset[0], faceOffsetY = offset[1], faceOffsetZ = offset[2])).runSelfie(
             kfs, fv, tris.toIntArray(), { images[it.colorRef]!! },
         )
-        println("Selfie $target: ${res.triangleCount} tris, ${res.vertexCount} verts")
+        var res = res0
+        if (recolor != null) {
+            assertTrue(res.canRecolorHair, "hair mask present")
+            res = res.withHairColor(recolor.first, recolor.second)
+        }
+        println("Selfie $target $hair: ${res.triangleCount} tris, ${res.vertexCount} verts")
         assertTrue(res.triangleCount in (target - 100)..target, "triangle count ${res.triangleCount}")
         val out = File("build/" + (outName ?: "scan_selfie_${target}_${style}_${hair}${if (offset.any { it != 0f }) "_moved" else ""}")).apply { mkdirs() }
         File(out, "head.obj").writeText(res.objText())

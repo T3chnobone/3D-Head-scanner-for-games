@@ -133,6 +133,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     // Kept after processing so the preview can rebuild the selfie head with new face position / hair.
     private var selfieInput: Triple<List<Keyframe>, FloatArray, IntArray>? = null
     private var lastSettings = ScanSettings()
+    // Hair colour sliders (preview): null hue = natural colour from the photos; tone -1..1.
+    private lateinit var colorSliders: View
+    private var hairHue: Float? = null
+    private var hairTone = 0f
+    private var recolorJob: kotlinx.coroutines.Job? = null
     private lateinit var previewView: PreviewView
     private var pendingResult: ScanResult? = null
     private var pendingCheck: android.graphics.Bitmap? = null
@@ -162,6 +167,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
         hairGroup.visibility = if (selfieMode) View.VISIBLE else View.GONE
         setupShapeEditor()
+        setupHairColorSliders()
         val styleGroup = findViewById<RadioGroup>(R.id.style_group)
         styleGroup.check(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) R.id.style_goldeneye else R.id.style_realistic)
         styleGroup.setOnCheckedChangeListener { _, id ->
@@ -648,7 +654,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setMessage("Name for this model:")
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
-                save(result.scaled(shapeSize, shapeSize, shapeSize), input.text.toString())
+                save(result.withHairColor(hairHue, hairTone).scaled(shapeSize, shapeSize, shapeSize), input.text.toString())
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -724,6 +730,56 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         resetShape(HairStyle.BUZZ)
     }
 
+    /** The two vertical sliders at the side of the preview: hair colour (rainbow) and tone (dark to light). */
+    private fun setupHairColorSliders() {
+        colorSliders = findViewById(R.id.color_sliders)
+        val hue = findViewById<SeekBar>(R.id.hair_hue)
+        val tone = findViewById<SeekBar>(R.id.hair_tone)
+        val hueLabel = findViewById<TextView>(R.id.hair_hue_label)
+        val toneLabel = findViewById<TextView>(R.id.hair_tone_label)
+        val density = resources.displayMetrics.density
+        // Rainbow track: the grey start means "natural colour".
+        val rainbow = intArrayOf(0xFF8A7560.toInt(), 0xFF8A7560.toInt()) +
+            (0..6).map { com.headscan.core.HairColor.hsv(it * 60f, 0.9f, 0.95f) }.toIntArray()
+        hue.progressDrawable = android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT, rainbow,
+        ).apply { cornerRadius = 4 * density; setSize(0, (8 * density).toInt()) }
+        tone.progressDrawable = android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xFF111111.toInt(), 0xFF888888.toInt(), 0xFFF2F2F2.toInt()),
+        ).apply { cornerRadius = 4 * density; setSize(0, (8 * density).toInt()) }
+        val listener = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                hairHue = if (hue.progress < HUE_NATURAL) null else (hue.progress - HUE_NATURAL) * 360f / (hue.max - HUE_NATURAL)
+                hairTone = (tone.progress - 50) / 50f
+                hueLabel.text = if (hairHue == null) "Natural" else "Colour"
+                toneLabel.text = "Tone"
+                if (fromUser) refreshHairColor()
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        }
+        hue.setOnSeekBarChangeListener(listener)
+        tone.setOnSeekBarChangeListener(listener)
+        findViewById<View>(R.id.edit_reset).setOnLongClickListener {
+            hue.progress = 0; tone.progress = 50; refreshHairColor(); true
+        }
+        hueLabel.text = "Natural"
+    }
+
+    /** Recolours the preview texture in the background; only the latest slider position is applied. */
+    private fun refreshHairColor() {
+        val base = pendingResult ?: return
+        if (!base.canRecolorHair) return
+        val hue = hairHue; val tone = hairTone
+        recolorJob?.cancel()
+        recolorJob = lifecycleScope.launch(Dispatchers.Default) {
+            val recolored = base.withHairColor(hue, tone)
+            if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive == true) {
+                previewView.replaceTexture(recolored.texture, recolored.textureSize)
+            }
+        }
+    }
+
     private fun setupHairSpinner(spinner: android.widget.Spinner, initial: HairStyle, onPick: (HairStyle) -> Unit) {
         val adapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, HairStyle.values().map { hairLabel(it) })
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
@@ -740,6 +796,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private fun hairLabel(h: HairStyle) = when (h) {
         HairStyle.BUZZ -> "Buzz cut"
         HairStyle.CREW_CUT -> "Crew cut"
+        HairStyle.SHORT -> "Short hair"
+        HairStyle.MOHAWK -> "Mohawk"
+        HairStyle.AFRO -> "Afro"
         HairStyle.SIDE_PART -> "Side parting"
         HairStyle.FLAT_TOP -> "Flat top"
         HairStyle.BOB -> "Bob"
@@ -803,6 +862,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private fun enterAim() {
         state = State.AIM
         editPanel.visibility = View.GONE
+        colorSliders.visibility = View.GONE
         optionsPanel.visibility = View.VISIBLE
         progressBar.visibility = View.GONE
         secondaryButton.visibility = View.GONE
@@ -849,18 +909,26 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         editHairGroup.visibility = if (selfieEdits) View.VISIBLE else View.GONE
         applyButton.visibility = if (selfieEdits) View.VISIBLE else View.GONE
         editPanel.visibility = View.VISIBLE
+        colorSliders.visibility = if (result.canRecolorHair) View.VISIBLE else View.GONE
+        if (fresh) {
+            findViewById<SeekBar>(R.id.hair_hue).progress = 0
+            findViewById<SeekBar>(R.id.hair_tone).progress = 50
+            hairHue = null; hairTone = 0f
+        } else refreshHairColor()
         actionButton.text = "Save"
         actionButton.isEnabled = true
         secondaryButton.text = "Discard"
         secondaryButton.visibility = View.VISIBLE
         val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
         showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin. " +
-            (if (selfieInput != null) "Move your face on the head or change the hair, then tap Apply changes. " else "") +
+            (if (selfieInput != null) "Move your face on the head or change the hairstyle, then tap Apply changes. " +
+                "The side sliders change hair colour and tone. " else "") +
             "Save it with a name, or discard it.")
     }
 
     private fun enterDone(message: String) {
         editPanel.visibility = View.GONE
+        colorSliders.visibility = View.GONE
         optionsPanel.visibility = View.GONE
         state = State.DONE
         progressBar.visibility = View.GONE
@@ -919,6 +987,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val MAX_KEYFRAMES = 60
         private const val MIN_KEYFRAMES = 8
         /** How far the face can be moved on the head: ±2 cm sideways, ±3 cm up/down, ±2 cm in/out. */
+        /** Hair colour slider positions below this mean "natural colour". */
+        private const val HUE_NATURAL = 20
         private val FACE_MOVE = floatArrayOf(0.02f, 0.03f, 0.02f)
         private const val LOW_TRIANGLES = 1500
         private const val HIGH_TRIANGLES = 3500

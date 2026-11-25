@@ -24,6 +24,12 @@ class PreviewView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                            val cx: Float, val cy: Float, val cz: Float, val radius: Float, val texture: Bitmap)
 
     @Volatile private var pending: MeshData? = null
+    @Volatile private var pendingTexture: Bitmap? = null
+
+    /** Swaps the texture of the mesh being shown (used for live hair recolouring). */
+    fun replaceTexture(argb: IntArray, size: Int) {
+        pendingTexture = Bitmap.createBitmap(argb, size, size, Bitmap.Config.ARGB_8888)
+    }
     private var current: MeshData? = null
     private var program = 0
     private var textureId = 0
@@ -127,6 +133,12 @@ class PreviewView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             current = m
         }
         val m = current ?: return
+        pendingTexture?.let { tex ->
+            pendingTexture = null
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, tex, 0)
+            tex.recycle()
+        }
         val now = System.currentTimeMillis()
         if (!dragging && lastFrameMs != 0L) yaw += (now - lastFrameMs) * 0.02f
         lastFrameMs = now
