@@ -878,7 +878,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     /** Rebuilds the selfie head in the background while the current model stays on screen, then swaps it in. */
     private fun startLiveRebuild() {
         if (state != State.PREVIEW) return
-        if (rebuildJob?.isActive == true) { rebuildQueued = true; return }
+        if (rebuildJob != null) { rebuildQueued = true; return }
         val input = selfieInput ?: return
         val settings = lastSettings.copy(
             hairStyle = editHair,
@@ -908,7 +908,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 error = e.message ?: e.javaClass.simpleName
             }
             withContext(Dispatchers.Main) {
-                if (state != State.PREVIEW) return@withContext
+                if (state != State.PREVIEW) { rebuildJob = null; rebuildQueued = false; return@withContext }
+                rebuildJob = null      // this job is finishing; let the next rebuild start
                 if (rebuildQueued) {
                     rebuildQueued = false
                     startLiveRebuild()
@@ -1059,6 +1060,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val wasRunning = state == State.CAPTURING || state == State.AIM
         statusText.removeCallbacks(liveRebuild)
         rebuildQueued = false
+        rebuildJob?.cancel(); rebuildJob = null
         finishRequested.set(false)
         secondaryButton.isEnabled = true
         if (wasRunning) surfaceView.onPause()
