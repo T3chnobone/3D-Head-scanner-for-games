@@ -9,7 +9,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Hair added to the generic head in Selfie mode. */
-enum class HairStyle { BUZZ, SHORT, LONG }
+enum class HairStyle { BUZZ, CREW_CUT, SIDE_PART, FLAT_TOP, BOB, BUN }
 
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
@@ -150,42 +150,109 @@ class SelfieHead(
         return smin(head, neck, 0.012f)
     }
 
-    /** Height of the hairline: at the forehead in front, sloping down to the nape at the back. */
-    private fun hairlineY(z: Float): Float {
-        val front = headCz + rz * 0.55f
-        val back = headCz - rz
-        val t = ((z - back) / (front - back)).coerceIn(0f, 1f)
-        val nape = minY + 0.035f
-        val forehead = maxY - 0.012f
-        return nape + (forehead - nape) * t * t
+    private fun smoothstep(e0: Float, e1: Float, x: Float): Float {
+        val t = ((x - e0) / (e1 - e0)).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
     }
 
-    /** Signed distance of the hair volume for the chosen style (large positive for BUZZ = no extra volume). */
-    fun hairSdf(x: Float, y: Float, z: Float): Float {
-        if (hairStyle == HairStyle.BUZZ) return 1f
-        val thick = if (hairStyle == HairStyle.SHORT) 0.014f else 0.02f
-        // Cap: the cranium grown outward, kept above the hairline and behind the forehead.
-        val ex = (x - headCx) / (rx + thick); val ey = (y - headCy) / (ry + thick * 1.6f); val ez = (z - headCz) / (rz + thick)
-        val shell = (sqrt(ex * ex + ey * ey + ez * ez) - 1f) * min(rx, min(ry, rz))
-        val faceCut = z - (headCz + rz * 0.62f)           // never in front of the forehead
-        var cap = max(shell, max(hairlineY(z) - y, faceCut))
-        if (hairStyle == HairStyle.LONG) {
-            // Curtain: falls behind and beside the face to below the jaw, with a rounded bottom.
-            val cx2 = (x - headCx) / (rx + 0.014f); val cz2 = (z - (headCz - 0.008f)) / (rz + 0.012f)
-            val tube = (sqrt(cx2 * cx2 + cz2 * cz2) - 1f) * rx
-            val bottom = minY - 0.045f
-            val vr = (headCy - bottom)
-            val ey2 = (y - headCy) / vr; val ex2 = (x - headCx) / (rx + 0.03f)
-            val rounded = (sqrt(ey2 * ey2 + ex2 * ex2) - 1f) * rx
-            val curtain = max(max(tube, rounded), max(y - headCy, z - (headCz + rz * 0.15f)))
-            cap = smin(cap, curtain, 0.015f)
+    private fun smax(a: Float, b: Float, k: Float) = -smin(-a, -b, k)
+
+    /** 0 outside the real face, rising smoothly to 1 a little inside its border. */
+    fun faceMask(x: Float, y: Float, z: Float): Float {
+        val fi = gx(x); val fj = gy(y)
+        val i = fi.toInt(); val j = fj.toInt()
+        if (fi < 0 || fj < 0 || i >= gw || j >= gh) return 0f
+        val k = j * gw + i
+        val zf = zFace[k]
+        if (zf.isNaN() || z < zf - 0.03f) return 0f
+        return smoothstep(0f, 1f, blend[k])
+    }
+
+    /** Height of the hairline around the head: forehead in front, sideburns at the sides, nape at the back. */
+    private fun hairlineY(x: Float, z: Float): Float {
+        val w = (z - headCz) / rz
+        val s = abs(x - headCx) / rx
+        val forehead = maxY - 0.008f + 0.008f * smoothstep(0.35f, 0.85f, s)   // slight temple recession
+        val side = headCy - 0.03f
+        val nape = minY + 0.04f
+        return if (w < 0f) nape + (side - nape) * smoothstep(-1f, 0f, w)
+        else side + (forehead - side) * smoothstep(0f, 0.55f, w)
+    }
+
+    /** 0..1: how much of the scalp at this point is covered by hair (soft hairline, never on the face). */
+    private fun scalpCoverage(x: Float, y: Float, z: Float): Float =
+        smoothstep(-0.004f, 0.004f, y - hairlineY(x, z)) * (1f - faceMask(x, y, z))
+
+    /** Hair thickness grown out from the scalp for the chosen style (metres). */
+    fun hairThickness(x: Float, y: Float, z: Float): Float {
+        if (hairStyle == HairStyle.BUZZ) return 0f
+        val cov = scalpCoverage(x, y, z)
+        if (cov <= 0f) return 0f
+        val u = (y - headCy) / ry
+        val w = (z - headCz) / rz
+        val lx = x - headCx
+        val t = when (hairStyle) {
+            HairStyle.CREW_CUT -> 0.005f + 0.003f * smoothstep(0.4f, 0.9f, u)
+            HairStyle.SIDE_PART -> {
+                val top = 0.006f + 0.010f * smoothstep(0.15f, 0.8f, u)
+                val quiff = 0.005f * smoothstep(0.2f, 0.7f, w) * smoothstep(0.45f, 0.9f, u)
+                val g = (lx - 0.32f * rx) / 0.006f
+                val groove = 0.006f * exp(-g * g) * smoothstep(0.35f, 0.7f, u) * smoothstep(-0.4f, 0.1f, w)
+                top + quiff - groove
+            }
+            HairStyle.FLAT_TOP -> {
+                // Tall on top but kept inside the skull outline, so the sides stay upright (no brim).
+                val radial = sqrt(lx * lx / (rx * rx) + w * w)
+                0.005f + 0.024f * smoothstep(0.45f, 0.8f, u) * (1f - smoothstep(0.5f, 0.85f, radial))
+            }
+            HairStyle.BOB -> 0.009f + 0.008f * smoothstep(0.3f, -0.5f, u)
+            HairStyle.BUN -> 0.005f
+            HairStyle.BUZZ -> 0f
         }
-        return cap
+        return t * cov
+    }
+
+    /** Extra hair shapes that stick out beyond the scalp (bob curtain, bun). 1 = none. */
+    private fun extraHairSdf(x: Float, y: Float, z: Float): Float {
+        val lx = x - headCx; val ly = y - headCy; val lz = z - headCz
+        return when (hairStyle) {
+            HairStyle.BOB -> {
+                // Chin-length curtain around the back and sides, tapering in at the bottom.
+                val bottom = minY + 0.01f
+                val taper = 1f - 0.12f * smoothstep(headCy - 0.02f, bottom, y)
+                val ex = lx / ((rx + 0.017f) * taper); val ez = (lz + 0.005f) / ((rz + 0.014f) * taper)
+                val tube = (sqrt(ex * ex + ez * ez) - 1f) * rx
+                val front = lz - rz * 0.18f
+                val shell = smax(smax(tube, front, 0.01f), smax(bottom - y, ly, 0.01f), 0.008f)
+                max(shell, faceMask(x, y, z) * 0.02f - 0.001f)
+            }
+            HairStyle.BUN -> {
+                val bx = lx; val by = ly - 0.35f * ry; val bz = lz + rz + 0.008f
+                sqrt(bx * bx + by * by + bz * bz) - 0.03f
+            }
+            else -> 1f
+        }
+    }
+
+    /** 0..1 hair colour amount for texturing (scalp coverage, or 1 on bob / bun shapes). */
+    fun hairColorAmount(x: Float, y: Float, z: Float): Float {
+        if (extraHairSdf(x, y, z) < 0.004f && genericSdf(x, y, z) > 0.003f) return 1f - faceMask(x, y, z)
+        val c = scalpCoverage(x, y, z)
+        return if (hairStyle == HairStyle.BUZZ) c * 0.6f else c
+    }
+
+    /** Head + neck + hair, before the face is merged in. */
+    private fun headWithHair(x: Float, y: Float, z: Float): Float {
+        var g = genericSdf(x, y, z) - hairThickness(x, y, z)
+        if (hairStyle == HairStyle.FLAT_TOP) g = max(g, y - (headCy + ry + 0.016f))
+        val extra = extraHairSdf(x, y, z)
+        if (extra < 0.05f) g = smin(g, extra, 0.006f)
+        return g
     }
 
     /** Signed distance of the personalised head: generic head with the real face surface merged in front. */
     fun sdf(x: Float, y: Float, z: Float): Float {
-        val g = min(genericSdf(x, y, z), hairSdf(x, y, z))
+        val g = headWithHair(x, y, z)
         val fi = gx(x); val fj = gy(y)
         val i = fi.toInt(); val j = fj.toInt()
         if (fi < 0 || fj < 0 || i >= gw || j >= gh) return g
@@ -202,7 +269,7 @@ class SelfieHead(
 
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
-        val pad = if (hairStyle == HairStyle.BUZZ) 0.02f else 0.045f
+        val pad = if (hairStyle == HairStyle.BUZZ) 0.02f else 0.05f
         val x0 = min(headCx - rx, minX) - pad; val x1 = max(headCx + rx, maxX) + pad
         val y0 = neckBottom; val y1 = max(headCy + ry, maxY) + pad
         val z0 = headCz - rz - pad; val z1 = max(noseZ, headCz + rz) + pad
@@ -224,24 +291,4 @@ class SelfieHead(
         return vol
     }
 
-    val faceMoved = faceOffset.any { abs(it) > 0.002f }
-
-    /** True on (or just around) the real face surface. */
-    fun isFaceArea(x: Float, y: Float, z: Float): Boolean {
-        val fi = gx(x); val fj = gy(y)
-        val i = fi.toInt(); val j = fj.toInt()
-        if (fi < 0 || fj < 0 || i >= gw || j >= gh) return false
-        val zf = zFace[j * gw + i]
-        return !zf.isNaN() && z > zf - 0.025f
-    }
-
-    /** True on hair geometry added by the hairstyle (outside the bald head). */
-    fun isAddedHair(x: Float, y: Float, z: Float): Boolean =
-        hairStyle != HairStyle.BUZZ && hairSdf(x, y, z) < 0.004f && genericSdf(x, y, z) > 0.002f
-
-    /** True where unseen texels should get hair colour (scalp and back of head) rather than skin colour. */
-    fun isHairRegion(x: Float, y: Float, z: Float): Boolean {
-        if (y > maxY - 0.01f) return true
-        return z < headCz - 0.02f && y > minY + 0.05f
-    }
 }

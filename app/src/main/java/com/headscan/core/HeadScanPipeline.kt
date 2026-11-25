@@ -145,26 +145,60 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         return finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource, hair, crop = false, progress, smoothing = 3)
     }
 
-    /** Picks hair / skin colours for parts of the generic head that no photo saw. */
+    /**
+     * Paints the generic head: skin tone measured from the cheeks and forehead, hair colour from just above the
+     * forehead, a soft hairline, and the photo face blended into the skin at its border.
+     */
     private class HairFill(val head: SelfieHead) {
         var hair = 0xFF3A2A1E.toInt()
         var skin = 0xFFC89F86.toInt()
         fun prepare(baker: TextureBaker) {
-            baker.meanSeenColor { x, y, z -> y < head.maxY - 0.03f && y > head.minY + 0.03f && z > head.headCz }?.let { skin = it }
-            baker.meanSeenColor(30) { _, y, z -> y > head.maxY + 0.005f && z > head.headCz }?.let { hair = it }
+            val h = head.maxY - head.minY
+            baker.robustSeenColor { x, y, z ->
+                if (head.faceMask(x, y, z) < 0.9f) return@robustSeenColor false
+                val ax = kotlin.math.abs(x)
+                val cheek = y > head.minY + 0.38f * h && y < head.minY + 0.55f * h && ax > 0.022f && ax < 0.048f
+                val forehead = y > head.minY + 0.78f * h && y < head.maxY - 0.015f && ax < 0.03f
+                cheek || forehead
+            }?.let { skin = it }
+            baker.robustSeenColor(30) { x, y, z ->
+                y > head.maxY + 0.004f && y < head.maxY + 0.035f && z > head.headCz && kotlin.math.abs(x) < 0.05f
+            }?.let { hair = it }
         }
-        fun color(x: Float, y: Float, z: Float) = if (head.isHairRegion(x, y, z)) hair else skin
 
-        /** Added hair geometry is always painted with hair colour plus a strand pattern (photos don't match its shape). */
-        fun override(x: Float, y: Float, z: Float): Int? {
-            // Once the face is moved, the photos no longer line up with the generic head: paint it plainly.
-            if (head.faceMoved && !head.isAddedHair(x, y, z) && !head.isFaceArea(x, y, z)) return color(x, y, z)
-            if (!head.isAddedHair(x, y, z)) return null
-            val ang = kotlin.math.atan2(x - head.headCx, z - head.headCz)
-            val strands = 0.5f + 0.5f * kotlin.math.sin(ang * 140f + kotlin.math.sin(y * 90f) * 2f)
-            val k = 0.78f + 0.3f * strands
-            fun ch(c: Int) = (c * k).toInt().coerceIn(0, 255)
-            return (0xFF shl 24) or (ch((hair shr 16) and 255) shl 16) or (ch((hair shr 8) and 255) shl 8) or ch(hair and 255)
+        private fun mix(a: Int, b: Int, t: Float): Int {
+            val u = t.coerceIn(0f, 1f)
+            fun ch(sh: Int) = (((a shr sh) and 255) * (1 - u) + ((b shr sh) and 255) * u).toInt().coerceIn(0, 255)
+            return (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+
+        private fun scale(c: Int, k: Float): Int {
+            fun ch(sh: Int) = (((c shr sh) and 255) * k).toInt().coerceIn(0, 255)
+            return (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+
+        /** Hair colour with a fine strand pattern: front-to-back on top, downward on the sides. */
+        private fun hairAt(x: Float, y: Float, z: Float): Int {
+            val lx = x - head.headCx; val lz = z - head.headCz
+            val top = kotlin.math.sin(lx * 900f + kotlin.math.sin(lz * 70f) * 2.5f)
+            val side = kotlin.math.sin(kotlin.math.atan2(lx, lz) * 120f + kotlin.math.sin(y * 80f) * 2f)
+            val u = ((y - head.headCy) / 0.08f).coerceIn(0f, 1f)
+            val strands = top * u + side * (1 - u)
+            val n = kotlin.math.sin(x * 371f + y * 533f + z * 197f) * 0.5f     // cheap variation
+            return scale(hair, 0.9f + 0.12f * strands + 0.05f * n)
+        }
+
+        fun color(x: Float, y: Float, z: Float): Int {
+            // Necks are usually a touch darker / more shaded than the cheeks.
+            val neckShade = if (y < head.minY) 0.93f else 1f
+            val base = scale(skin, neckShade)
+            return mix(base, hairAt(x, y, z), head.hairColorAmount(x, y, z))
+        }
+
+        fun override(x: Float, y: Float, z: Float, seen: Int?): Int {
+            val painted = color(x, y, z)
+            val fm = head.faceMask(x, y, z)
+            return if (fm > 0f && seen != null) mix(painted, seen, fm) else painted
         }
     }
 
@@ -221,7 +255,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         hairFill?.prepare(baker)
         val texture = if (hairFill != null) baker.finish(
             fillColor = { x, y, z -> hairFill.color(x, y, z) },
-            overrideColor = { x, y, z -> hairFill.override(x, y, z) },
+            overrideColor = { x, y, z, seen -> hairFill.override(x, y, z, seen) },
         ) else baker.finish()
         if (s.style == HeadStyle.GOLDENEYE_SOURCE) {
             baker.bakeShading(texture, SourceStyle.vertexOcclusion(mesh, normals), SourceStyle::shade)

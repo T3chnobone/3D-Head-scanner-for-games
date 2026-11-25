@@ -27,7 +27,18 @@ class SyntheticScanTest {
         return min(min(head, nose), min(neck, shoulders))
     }
 
+    /** When true, the synthetic person has skin, eyes, lips and brown hair instead of test stripes. */
+    var skinMode = false
+
     fun trueColor(px: Float, py: Float, pz: Float): IntArray {
+        if (skinMode) {
+            val x = px - c[0]; val y = py - c[1]; val z = pz - c[2]
+            if (y > 0.065f && z < 0.09f) return intArrayOf(70, 48, 32)                         // hair
+            if (z > 0.06f && abs(abs(x) - 0.03f) < 0.012f && abs(y - 0.012f) < 0.006f) return intArrayOf(60, 45, 40) // eyes
+            if (z > 0.06f && abs(x) < 0.022f && abs(y + 0.06f) < 0.006f) return intArrayOf(165, 85, 85)            // lips
+            val shade = (0.85f + 0.15f * (y + 0.1f) / 0.2f).coerceIn(0.75f, 1f)
+            return intArrayOf((214 * shade).toInt(), (168 * shade).toInt(), (142 * shade).toInt())
+        }
         val y = py - c[1]
         val ang = atan2(px - c[0], pz - c[2])
         return intArrayOf(
@@ -210,10 +221,20 @@ class SyntheticScanTest {
     fun selfieGoldenEyeStyle() = selfie(1500, HeadStyle.GOLDENEYE_SOURCE)
 
     @Test
-    fun selfieShortHair() = selfie(1500, hair = HairStyle.SHORT)
+    fun selfieShortHair() = selfie(1500, hair = HairStyle.SIDE_PART)
 
     @Test
-    fun selfieLongHair() = selfie(3500, hair = HairStyle.LONG)
+    fun selfieLongHair() = selfie(3500, hair = HairStyle.BOB)
+
+    /** Renders every hairstyle on a skin-coloured synthetic person (build/gallery_*), for visual review. */
+    @Test
+    fun hairGallery() {
+        skinMode = true
+        try {
+            for (h in HairStyle.values()) selfie(1500, hair = h, outName = "gallery_$h")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, outName = "gallery_GES_SIDE_PART")
+        } finally { skinMode = false; images.clear() }
+    }
 
     @Test
     fun scaledResult() {
@@ -226,9 +247,9 @@ class SyntheticScanTest {
     }
 
     @Test
-    fun selfieFaceMoved() = selfie(1500, hair = HairStyle.SHORT, offset = floatArrayOf(0.015f, -0.02f, 0.02f))
+    fun selfieFaceMoved() = selfie(1500, hair = HairStyle.CREW_CUT, offset = floatArrayOf(0.015f, -0.02f, 0.02f))
 
-    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3)) {
+    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3), outName: String? = null) {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
@@ -264,7 +285,7 @@ class SyntheticScanTest {
         )
         println("Selfie $target: ${res.triangleCount} tris, ${res.vertexCount} verts")
         assertTrue(res.triangleCount in (target - 100)..target, "triangle count ${res.triangleCount}")
-        val out = File("build/scan_selfie_${target}_${style}_${hair}${if (offset.any { it != 0f }) "_moved" else ""}").apply { mkdirs() }
+        val out = File("build/" + (outName ?: "scan_selfie_${target}_${style}_${hair}${if (offset.any { it != 0f }) "_moved" else ""}")).apply { mkdirs() }
         File(out, "head.obj").writeText(res.objText())
         File(out, "head.mtl").writeText(res.mtlText())
         File(out, "head_texture.ppm").outputStream().buffered().use { o ->

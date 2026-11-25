@@ -119,7 +119,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private lateinit var selfie: SelfieCapture
     private var headStyle = HeadStyle.REALISTIC
     private var hairStyle = HairStyle.BUZZ
-    private lateinit var hairGroup: RadioGroup
+    private lateinit var hairGroup: View
     private lateinit var editPanel: View
     private lateinit var editBars: List<SeekBar>
     private var shapeSize = 1f
@@ -128,7 +128,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var editDirty = false
     private var suppressEditEvents = false
     private lateinit var applyButton: Button
-    private lateinit var editHairGroup: RadioGroup
+    private lateinit var editHairGroup: View
+    private lateinit var editHairSpinner: android.widget.Spinner
     // Kept after processing so the preview can rebuild the selfie head with new face position / hair.
     private var selfieInput: Triple<List<Keyframe>, FloatArray, IntArray>? = null
     private var lastSettings = ScanSettings()
@@ -154,10 +155,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         headStyle = if (prefs.getString("style", "") == HeadStyle.GOLDENEYE_SOURCE.name) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
         hairGroup = findViewById(R.id.hair_group)
         hairStyle = HairStyle.values().firstOrNull { it.name == prefs.getString("hair", "") } ?: HairStyle.BUZZ
-        hairGroup.check(when (hairStyle) { HairStyle.SHORT -> R.id.hair_short; HairStyle.LONG -> R.id.hair_long; else -> R.id.hair_buzz })
-        hairGroup.setOnCheckedChangeListener { _, id ->
-            hairStyle = when (id) { R.id.hair_short -> HairStyle.SHORT; R.id.hair_long -> HairStyle.LONG; else -> HairStyle.BUZZ }
-            prefs.edit().putString("hair", hairStyle.name).apply()
+        val hairSpinner = findViewById<android.widget.Spinner>(R.id.hair_spinner)
+        setupHairSpinner(hairSpinner, hairStyle) { h ->
+            hairStyle = h
+            prefs.edit().putString("hair", h.name).apply()
         }
         hairGroup.visibility = if (selfieMode) View.VISIBLE else View.GONE
         setupShapeEditor()
@@ -684,6 +685,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         editPanel = findViewById(R.id.edit_panel)
         applyButton = findViewById(R.id.edit_apply)
         editHairGroup = findViewById(R.id.edit_hair_group)
+        editHairSpinner = findViewById(R.id.edit_hair_spinner)
         val ids = listOf(R.id.edit_size, R.id.edit_width, R.id.edit_height, R.id.edit_depth)
         val labels = listOf(R.id.edit_size_label, R.id.edit_width_label, R.id.edit_height_label, R.id.edit_depth_label)
         val names = listOf("Size", "Face ←→", "Face ↑↓", "Face in/out")
@@ -708,9 +710,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 override fun onStopTrackingTouch(sb: SeekBar) {}
             })
         }
-        editHairGroup.setOnCheckedChangeListener { _, id ->
-            editHair = when (id) { R.id.edit_hair_short -> HairStyle.SHORT; R.id.edit_hair_long -> HairStyle.LONG; else -> HairStyle.BUZZ }
-            if (!suppressEditEvents) markDirty()
+        setupHairSpinner(editHairSpinner, HairStyle.BUZZ) { h ->
+            if (h != editHair) {
+                editHair = h
+                if (!suppressEditEvents) markDirty()
+            }
         }
         applyButton.setOnClickListener { applyEdits() }
         findViewById<View>(R.id.edit_reset).setOnClickListener {
@@ -718,6 +722,28 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             for (k in 1..3) editBars[k].progress = 50
         }
         resetShape(HairStyle.BUZZ)
+    }
+
+    private fun setupHairSpinner(spinner: android.widget.Spinner, initial: HairStyle, onPick: (HairStyle) -> Unit) {
+        val adapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, HairStyle.values().map { hairLabel(it) })
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter = adapter
+        spinner.setSelection(HairStyle.values().indexOf(initial))
+        spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                onPick(HairStyle.values()[position])
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+    }
+
+    private fun hairLabel(h: HairStyle) = when (h) {
+        HairStyle.BUZZ -> "Buzz cut"
+        HairStyle.CREW_CUT -> "Crew cut"
+        HairStyle.SIDE_PART -> "Side parting"
+        HairStyle.FLAT_TOP -> "Flat top"
+        HairStyle.BOB -> "Bob"
+        HairStyle.BUN -> "Bun"
     }
 
     private fun markDirty() {
@@ -730,7 +756,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         suppressEditEvents = true
         editBars.forEach { it.progress = 51; it.progress = 50 }   // force a change event so labels update
         editHair = hair
-        editHairGroup.check(when (hair) { HairStyle.SHORT -> R.id.edit_hair_short; HairStyle.LONG -> R.id.edit_hair_long; else -> R.id.edit_hair_buzz })
+        editHairSpinner.setSelection(HairStyle.values().indexOf(hair))
         suppressEditEvents = false
         editDirty = false
         applyButton.isEnabled = false

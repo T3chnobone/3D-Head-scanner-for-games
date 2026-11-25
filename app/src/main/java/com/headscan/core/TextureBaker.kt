@@ -158,6 +158,28 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
         }
     }
 
+    /**
+     * Robust colour (ARGB) of seen texels matching [where]: the middle half by brightness is averaged,
+     * so shadows, highlights, eyes and eyebrows don't skew it. Null if fewer than [minCount] texels.
+     */
+    fun robustSeenColor(minCount: Int = 50, where: (Float, Float, Float) -> Boolean): Int? {
+        val cols = IntList()
+        for (t in texelIndex.indices) {
+            if (accW[t] <= 0f || !where(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])) continue
+            val r = (accR[t] / accW[t]).toInt().coerceIn(0, 255)
+            val g = (accG[t] / accW[t]).toInt().coerceIn(0, 255)
+            val b = (accB[t] / accW[t]).toInt().coerceIn(0, 255)
+            cols.add((r shl 16) or (g shl 8) or b)
+        }
+        if (cols.size < minCount) return null
+        val arr = cols.toArray().sortedBy { c -> 299 * ((c shr 16) and 255) + 587 * ((c shr 8) and 255) + 114 * (c and 255) }
+        val lo = arr.size / 4; val hi = arr.size * 3 / 4
+        var r = 0L; var g = 0L; var b = 0L
+        for (k in lo until hi) { val c = arr[k]; r += (c shr 16) and 255; g += (c shr 8) and 255; b += c and 255 }
+        val n = (hi - lo).coerceAtLeast(1)
+        return (0xFF shl 24) or ((r / n).toInt() shl 16) or ((g / n).toInt() shl 8) or (b / n).toInt()
+    }
+
     /** Average colour (ARGB) of the texels seen in photos whose position matches [where], or null if fewer than [minCount]. */
     fun meanSeenColor(minCount: Int = 50, where: (Float, Float, Float) -> Boolean): Int? {
         var r = 0.0; var g = 0.0; var b = 0.0; var n = 0
@@ -173,7 +195,7 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
      * Produces the final ARGB texture (row 0 = top). Unseen texels get [fillColor] at their position
      * (or the mean seen colour), gaps are dilated.
      */
-    fun finish(fillColor: ((Float, Float, Float) -> Int)? = null, overrideColor: ((Float, Float, Float) -> Int?)? = null): IntArray {
+    fun finish(fillColor: ((Float, Float, Float) -> Int)? = null, overrideColor: ((Float, Float, Float, Int?) -> Int?)? = null): IntArray {
         val out = IntArray(size * size)
         val filled = BooleanArray(size * size)
         var sr = 0.0; var sg = 0.0; var sb = 0.0; var sn = 0
@@ -186,7 +208,11 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
         for (t in texelIndex.indices) {
             val i = texelIndex[t]
             val r: Int; val g: Int; val b: Int
-            val forced = overrideColor?.invoke(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])
+            val seen = if (accW[t] > 0f) (0xFF shl 24) or
+                ((accR[t] / accW[t]).toInt().coerceIn(0, 255) shl 16) or
+                ((accG[t] / accW[t]).toInt().coerceIn(0, 255) shl 8) or
+                (accB[t] / accW[t]).toInt().coerceIn(0, 255) else null
+            val forced = overrideColor?.invoke(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2], seen)
             if (forced != null) {
                 r = (forced shr 16) and 255; g = (forced shr 8) and 255; b = forced and 255
             } else if (accW[t] > 0f) {

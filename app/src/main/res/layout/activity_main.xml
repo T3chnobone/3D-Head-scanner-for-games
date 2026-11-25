@@ -138,42 +138,27 @@
                     android:textStyle="bold" />
             </RadioGroup>
 
-            <RadioGroup
+            <LinearLayout
                 android:id="@+id/hair_group"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <RadioButton
-                    android:id="@+id/hair_buzz"
-                    android:layout_width="0dp"
+                <TextView
+                    android:layout_width="110dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:buttonTint="@android:color/white"
-                    android:text="Buzz cut"
+                    android:text="Hairstyle"
                     android:textColor="@android:color/white"
                     android:textSize="13sp" />
 
-                <RadioButton
-                    android:id="@+id/hair_short"
+                <Spinner
+                    android:id="@+id/hair_spinner"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:buttonTint="@android:color/white"
-                    android:text="Short hair"
-                    android:textColor="@android:color/white"
-                    android:textSize="13sp" />
-
-                <RadioButton
-                    android:id="@+id/hair_long"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:buttonTint="@android:color/white"
-                    android:text="Long hair"
-                    android:textColor="@android:color/white"
-                    android:textSize="13sp" />
-            </RadioGroup>
+                    android:backgroundTint="@android:color/white" />
+            </LinearLayout>
         </LinearLayout>
 
 
@@ -277,42 +262,27 @@
                     android:progress="50" />
             </LinearLayout>
 
-            <RadioGroup
+            <LinearLayout
                 android:id="@+id/edit_hair_group"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <RadioButton
-                    android:id="@+id/edit_hair_buzz"
-                    android:layout_width="0dp"
+                <TextView
+                    android:layout_width="110dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:buttonTint="@android:color/white"
-                    android:text="Buzz cut"
+                    android:text="Hairstyle"
                     android:textColor="@android:color/white"
                     android:textSize="13sp" />
 
-                <RadioButton
-                    android:id="@+id/edit_hair_short"
+                <Spinner
+                    android:id="@+id/edit_hair_spinner"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:buttonTint="@android:color/white"
-                    android:text="Short hair"
-                    android:textColor="@android:color/white"
-                    android:textSize="13sp" />
-
-                <RadioButton
-                    android:id="@+id/edit_hair_long"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:buttonTint="@android:color/white"
-                    android:text="Long hair"
-                    android:textColor="@android:color/white"
-                    android:textSize="13sp" />
-            </RadioGroup>
+                    android:backgroundTint="@android:color/white" />
+            </LinearLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
