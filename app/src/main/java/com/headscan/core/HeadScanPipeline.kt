@@ -29,8 +29,8 @@ data class ScanSettings(
 enum class HeadStyle {
     /** Smooth shading, natural photo texture. */
     REALISTIC,
-    /** Late-90s shooter look: faceted flat-shaded polygons, punchy posterised photo face. */
-    GOLDENEYE,
+    /** GoldenEye: Source (Half-Life 2 mod) character look: smooth head, crisp graded photo face with baked soft light and AO. */
+    GOLDENEYE_SOURCE,
 }
 
 class ScanResult(
@@ -185,9 +185,12 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             baker.addView(kf, colorSource.load(kf))
         }
         hairFill?.prepare(baker)
-        var texture = if (hairFill != null) baker.finish { x, y, z -> hairFill.color(x, y, z) } else baker.finish()
-        val flat = s.style == HeadStyle.GOLDENEYE
-        if (flat) texture = RetroStyle.apply(texture)
+        val texture = if (hairFill != null) baker.finish { x, y, z -> hairFill.color(x, y, z) } else baker.finish()
+        if (s.style == HeadStyle.GOLDENEYE_SOURCE) {
+            baker.bakeShading(texture, SourceStyle.vertexOcclusion(mesh, normals), SourceStyle::shade)
+            SourceStyle.grade(texture, s.textureSize)
+        }
+        val flat = false
 
         // 5. Move into a head-centred frame, face toward +Z, and write OBJ.
         progress("Writing OBJ", 0.97f)

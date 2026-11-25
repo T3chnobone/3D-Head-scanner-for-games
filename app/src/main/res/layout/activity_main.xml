@@ -133,7 +133,7 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:buttonTint="#D4AF37"
-                    android:text="GoldenEye style"
+                    android:text="GoldenEye: Source"
                     android:textColor="#D4AF37"
                     android:textStyle="bold" />
             </RadioGroup>

@@ -58,9 +58,13 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
     private val texelIndex: IntArray
     private val texelPos: FloatArray
     private val texelNrm: FloatArray
+    private val texelFace: IntArray
+    private val texelBary: FloatArray
 
     init {
         val idx = IntList(size * size)
+        val faceOf = IntList(size * size)
+        val bary = FloatList(size * size * 2)
         val p = FloatList(size * size * 3)
         val n = FloatList(size * size * 3)
         val pos = mesh.positions
@@ -83,6 +87,7 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
                 val w2 = 1f - w0 - w1
                 if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f) continue
                 idx.add(y * size + x)
+                faceOf.add(f); bary.add(w0); bary.add(w1)
                 for (k in 0 until 3) {
                     p.add(w0 * pos[3 * va + k] + w1 * pos[3 * vb + k] + w2 * pos[3 * vc + k])
                 }
@@ -95,6 +100,8 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
             }
         }
         texelIndex = idx.toArray()
+        texelFace = faceOf.toArray()
+        texelBary = bary.toArray()
         texelPos = p.toArray()
         texelNrm = n.toArray()
     }
@@ -195,6 +202,25 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
         val bg = (0xFF shl 24) or (meanR shl 16) or (meanG shl 8) or meanB
         for (i in out.indices) if (!filled[i]) out[i] = bg
         return out
+    }
+
+    /**
+     * Multiplies each texel of [texture] by [shade](normalY, scalar), where scalar is [vertexScalar]
+     * interpolated across the triangle. Used to bake soft lighting / ambient occlusion into the texture.
+     */
+    fun bakeShading(texture: IntArray, vertexScalar: FloatArray, shade: (Float, Float) -> Float) {
+        for (t in texelIndex.indices) {
+            val f = texelFace[t]
+            val w0 = texelBary[2 * t]; val w1 = texelBary[2 * t + 1]; val w2 = 1f - w0 - w1
+            val sc = w0 * vertexScalar[mesh.faces[3 * f]] + w1 * vertexScalar[mesh.faces[3 * f + 1]] + w2 * vertexScalar[mesh.faces[3 * f + 2]]
+            val k = shade(texelNrm[3 * t + 1], sc)
+            val i = texelIndex[t]
+            val c = texture[i]
+            val r = (((c shr 16) and 255) * k).toInt().coerceIn(0, 255)
+            val g = (((c shr 8) and 255) * k).toInt().coerceIn(0, 255)
+            val b = ((c and 255) * k).toInt().coerceIn(0, 255)
+            texture[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
     }
 
     private fun dilate(img: IntArray, filled: BooleanArray, passes: Int) {

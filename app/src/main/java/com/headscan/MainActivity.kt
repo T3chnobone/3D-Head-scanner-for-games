@@ -135,11 +135,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         optionsPanel = findViewById(R.id.options_panel)
         previewView = findViewById(R.id.preview_view)
         applySystemBarInsets()
-        headStyle = if (prefs.getString("style", "") == HeadStyle.GOLDENEYE.name) HeadStyle.GOLDENEYE else HeadStyle.REALISTIC
+        headStyle = if (prefs.getString("style", "") == HeadStyle.GOLDENEYE_SOURCE.name) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
         val styleGroup = findViewById<RadioGroup>(R.id.style_group)
-        styleGroup.check(if (headStyle == HeadStyle.GOLDENEYE) R.id.style_goldeneye else R.id.style_realistic)
+        styleGroup.check(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) R.id.style_goldeneye else R.id.style_realistic)
         styleGroup.setOnCheckedChangeListener { _, id ->
-            headStyle = if (id == R.id.style_goldeneye) HeadStyle.GOLDENEYE else HeadStyle.REALISTIC
+            headStyle = if (id == R.id.style_goldeneye) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
             prefs.edit().putString("style", headStyle.name).apply()
         }
 
@@ -692,7 +692,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         actionButton.isEnabled = true
         secondaryButton.text = "Discard"
         secondaryButton.visibility = View.VISIBLE
-        val style = if (headStyle == HeadStyle.GOLDENEYE) "GoldenEye style" else "Realistic"
+        val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
         showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin. Save it with a name, or discard it.")
     }
 

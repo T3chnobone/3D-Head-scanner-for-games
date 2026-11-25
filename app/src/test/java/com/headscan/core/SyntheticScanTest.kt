@@ -207,7 +207,7 @@ class SyntheticScanTest {
 
     /** Selfie mode: synthetic ARCore-style face mesh + front-camera photos from a head turning left/right/up/down. */
     @Test
-    fun selfieGoldenEyeStyle() = selfie(1500, HeadStyle.GOLDENEYE)
+    fun selfieGoldenEyeStyle() = selfie(1500, HeadStyle.GOLDENEYE_SOURCE)
 
     fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC) {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
@@ -262,9 +262,8 @@ class SyntheticScanTest {
             }
         }
         assertTrue(cnt > 20, "face vertices present")
-        if (style == HeadStyle.GOLDENEYE) {
-            assertTrue(res.objText().contains("s off"), "flat shading")
-            assertTrue(res.objText().lines().count { it.startsWith("vn ") } == res.triangleCount, "one normal per face")
+        if (style == HeadStyle.GOLDENEYE_SOURCE) {
+            assertTrue(res.objText().contains("s 1"), "smooth shading")
         }
         val (pos, nrm, st) = res.previewArrays()
         assertTrue(pos.size == res.triangleCount * 9 && nrm.size == pos.size && st.size == res.triangleCount * 6)
