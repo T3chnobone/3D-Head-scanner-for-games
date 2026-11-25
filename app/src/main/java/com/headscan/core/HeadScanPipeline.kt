@@ -25,6 +25,10 @@ data class ScanSettings(
     val style: HeadStyle = HeadStyle.REALISTIC,
     /** Selfie mode only: hair added to the generic head. */
     val hairStyle: HairStyle = HairStyle.BUZZ,
+    /** Selfie mode only: where the face sits on the generic head (metres, +X right, +Y up, +Z forward). */
+    val faceOffsetX: Float = 0f,
+    val faceOffsetY: Float = 0f,
+    val faceOffsetZ: Float = 0f,
 )
 
 /** Visual style of the generated head. */
@@ -134,7 +138,8 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
     ): ScanResult {
         if (keyframes.size < 3) throw ScanException("Need at least 3 captured views, got ${keyframes.size}.")
         progress("Fitting head to your face", 0.05f)
-        val head = SelfieHead(faceVertices, faceTriangles, settings.hairStyle)
+        val head = SelfieHead(faceVertices, faceTriangles, settings.hairStyle,
+            floatArrayOf(settings.faceOffsetX, settings.faceOffsetY, settings.faceOffsetZ))
         val vol = head.buildVolume(0.003f, 0.012f)
         val hair = HairFill(head)
         return finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource, hair, crop = false, progress, smoothing = 3)
@@ -152,6 +157,8 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
 
         /** Added hair geometry is always painted with hair colour plus a strand pattern (photos don't match its shape). */
         fun override(x: Float, y: Float, z: Float): Int? {
+            // Once the face is moved, the photos no longer line up with the generic head: paint it plainly.
+            if (head.faceMoved && !head.isAddedHair(x, y, z) && !head.isFaceArea(x, y, z)) return color(x, y, z)
             if (!head.isAddedHair(x, y, z)) return null
             val ang = kotlin.math.atan2(x - head.headCx, z - head.headCz)
             val strands = 0.5f + 0.5f * kotlin.math.sin(ang * 140f + kotlin.math.sin(y * 90f) * 2f)

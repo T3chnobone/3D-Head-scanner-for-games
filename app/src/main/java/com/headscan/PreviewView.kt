@@ -131,7 +131,7 @@ class PreviewView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (!dragging && lastFrameMs != 0L) yaw += (now - lastFrameMs) * 0.02f
         lastFrameMs = now
 
-        val dist = m.radius * 4.2f * max(1f, sx)
+        val dist = m.radius * 5.2f * max(1f, sx)
         Matrix.setLookAtM(view, 0, 0f, 0f, dist, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.setIdentityM(model, 0)
         Matrix.rotateM(model, 0, pitch, 1f, 0f, 0f)

@@ -225,7 +225,10 @@ class SyntheticScanTest {
         assertTrue(moved.mesh.positions[3] == 1.1f && moved.mesh.positions[1] == -0.05f && moved.mesh.positions[2] == 0.02f)
     }
 
-    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ) {
+    @Test
+    fun selfieFaceMoved() = selfie(1500, hair = HairStyle.SHORT, offset = floatArrayOf(0.015f, -0.02f, 0.02f))
+
+    fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3)) {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
@@ -255,12 +258,13 @@ class SyntheticScanTest {
             val m = world.camToWorld.copyOf(); m[12] -= c[0]; m[13] -= c[1]; m[14] -= c[2]
             kfs.add(Keyframe(m, invertRigid(m), ShortArray(1), 1, 1, world.depthIntrinsics.scaledTo(1, 1), world.colorIntrinsics, world.colorRef))
         }
-        val res = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair)).runSelfie(
+        val res = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair,
+            faceOffsetX = offset[0], faceOffsetY = offset[1], faceOffsetZ = offset[2])).runSelfie(
             kfs, fv, tris.toIntArray(), { images[it.colorRef]!! },
         )
         println("Selfie $target: ${res.triangleCount} tris, ${res.vertexCount} verts")
         assertTrue(res.triangleCount in (target - 100)..target, "triangle count ${res.triangleCount}")
-        val out = File("build/scan_selfie_${target}_${style}_$hair").apply { mkdirs() }
+        val out = File("build/scan_selfie_${target}_${style}_${hair}${if (offset.any { it != 0f }) "_moved" else ""}").apply { mkdirs() }
         File(out, "head.obj").writeText(res.objText())
         File(out, "head.mtl").writeText(res.mtlText())
         File(out, "head_texture.ppm").outputStream().buffered().use { o ->

@@ -123,7 +123,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private lateinit var editPanel: View
     private lateinit var editBars: List<SeekBar>
     private var shapeSize = 1f
-    private val shapeOffset = floatArrayOf(0f, 0f, 0f)       // metres along X (right), Y (up), Z (forward)
+    private val faceOffset = floatArrayOf(0f, 0f, 0f)        // face position on the head: X (right), Y (up), Z (forward), metres
+    private var editHair = HairStyle.BUZZ
+    private var editDirty = false
+    private var suppressEditEvents = false
+    private lateinit var applyButton: Button
+    private lateinit var editHairGroup: RadioGroup
+    // Kept after processing so the preview can rebuild the selfie head with new face position / hair.
+    private var selfieInput: Triple<List<Keyframe>, FloatArray, IntArray>? = null
+    private var lastSettings = ScanSettings()
     private lateinit var previewView: PreviewView
     private var pendingResult: ScanResult? = null
     private var pendingCheck: android.graphics.Bitmap? = null
@@ -551,18 +559,14 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle)
+        lastSettings = settings
+        selfieInput = if (isSelfie && faceVerts != null && faceTris != null) Triple(frames, faceVerts, faceTris) else null
         enterProcessing()
 
         lifecycleScope.launch(Dispatchers.Default) {
             try {
                 jpegWriter.submit(Runnable {}).get()   // wait for pending JPEG writes
-                val colorSource = ColorSource { kf ->
-                    val bmp = BitmapFactory.decodeFile(kf.colorRef)
-                        ?: throw ScanException("Could not read captured photo ${kf.colorRef}")
-                    val px = IntArray(bmp.width * bmp.height)
-                    bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-                    RgbImage(bmp.width, bmp.height, px).also { bmp.recycle() }
-                }
+                val colorSource = photoSource()
                 val onProgress = { msg: String, p: Float ->
                     runOnUiThread { showStatus("Building 3D model…\n$msg"); progressBar.progress = (p * 100).toInt() }
                 }
@@ -575,11 +579,55 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 }
                 // Selfie mode: also save a photo with the face mesh drawn on it, to check the texture lines up.
                 val check = if (isSelfie && faceVerts != null) AlignmentCheck.draw(frames.first(), faceVerts) else null
-                withContext(Dispatchers.Main) { enterPreview(result, check) }
+                withContext(Dispatchers.Main) { enterPreview(result, check, fresh = true) }
             } catch (e: Throwable) {
                 withContext(Dispatchers.Main) {
                     savedUris = emptyList()
                     enterDone("Scan failed: ${e.message ?: e.javaClass.simpleName}\n\nTry again with better light, slower movement and the head kept centred.")
+                }
+            }
+        }
+    }
+
+    private fun photoSource() = ColorSource { kf ->
+        val bmp = BitmapFactory.decodeFile(kf.colorRef)
+            ?: throw ScanException("Could not read captured photo ${kf.colorRef}")
+        val px = IntArray(bmp.width * bmp.height)
+        bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        RgbImage(bmp.width, bmp.height, px).also { bmp.recycle() }
+    }
+
+    /** Rebuilds the selfie head with the face position and hairstyle chosen in the preview. */
+    private fun applyEdits() {
+        val input = selfieInput ?: return
+        val settings = lastSettings.copy(
+            hairStyle = editHair,
+            faceOffsetX = faceOffset[0], faceOffsetY = faceOffset[1], faceOffsetZ = faceOffset[2],
+        )
+        state = State.PROCESSING
+        actionButton.isEnabled = false
+        secondaryButton.isEnabled = false
+        applyButton.isEnabled = false
+        progressBar.visibility = View.VISIBLE
+        progressBar.progress = 0
+        lifecycleScope.launch(Dispatchers.Default) {
+            try {
+                val result = HeadScanPipeline(settings).runSelfie(input.first, input.second, input.third, photoSource()) { msg, p ->
+                    runOnUiThread { showStatus("Rebuilding head…\n$msg"); progressBar.progress = (p * 100).toInt() }
+                }
+                withContext(Dispatchers.Main) {
+                    lastSettings = settings
+                    secondaryButton.isEnabled = true
+                    enterPreview(result, pendingCheck, fresh = false)
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    state = State.PREVIEW
+                    progressBar.visibility = View.GONE
+                    actionButton.isEnabled = true
+                    secondaryButton.isEnabled = true
+                    applyButton.isEnabled = true
+                    showStatus("Couldn't rebuild: ${e.message}. Try smaller changes.")
                 }
             }
         }
@@ -599,7 +647,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setMessage("Name for this model:")
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
-                save(result.transformed(shapeSize, shapeSize, shapeSize, shapeOffset[0], shapeOffset[1], shapeOffset[2]), input.text.toString())
+                save(result.scaled(shapeSize, shapeSize, shapeSize), input.text.toString())
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -631,12 +679,14 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    /** Size slider and X / Y / Z move sliders shown with the preview. */
+    /** Preview editor: size (live), face position on the head and hairstyle (Selfie mode, rebuilt with Apply). */
     private fun setupShapeEditor() {
         editPanel = findViewById(R.id.edit_panel)
+        applyButton = findViewById(R.id.edit_apply)
+        editHairGroup = findViewById(R.id.edit_hair_group)
         val ids = listOf(R.id.edit_size, R.id.edit_width, R.id.edit_height, R.id.edit_depth)
         val labels = listOf(R.id.edit_size_label, R.id.edit_width_label, R.id.edit_height_label, R.id.edit_depth_label)
-        val names = listOf("Size", "Move X", "Move Y", "Move Z")
+        val names = listOf("Size", "Face ←→", "Face ↑↓", "Face in/out")
         editBars = ids.map { findViewById(it) }
         editBars.forEachIndexed { i, bar ->
             val label = findViewById<TextView>(labels[i])
@@ -646,23 +696,44 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     if (i == 0) {
                         shapeSize = 1f + t * 0.5f            // 50%..150%
                         label.text = "Size ${(shapeSize * 100).toInt()}%"
+                        previewView.setTransform(shapeSize, 0f, 0f, 0f)
                     } else {
-                        shapeOffset[i - 1] = t * MAX_MOVE    // ±15 cm
-                        val cm = Math.round(shapeOffset[i - 1] * 100)
-                        label.text = "${names[i]} ${if (cm > 0) "+" else ""}$cm cm"
+                        faceOffset[i - 1] = t * FACE_MOVE[i - 1]
+                        val mm = Math.round(faceOffset[i - 1] * 1000)
+                        label.text = "${names[i]} ${if (mm > 0) "+" else ""}$mm mm"
+                        if (!suppressEditEvents) markDirty()
                     }
-                    previewView.setTransform(shapeSize, shapeOffset[0], shapeOffset[1], shapeOffset[2])
                 }
                 override fun onStartTrackingTouch(sb: SeekBar) {}
                 override fun onStopTrackingTouch(sb: SeekBar) {}
             })
         }
-        findViewById<View>(R.id.edit_reset).setOnClickListener { resetShape() }
-        resetShape()
+        editHairGroup.setOnCheckedChangeListener { _, id ->
+            editHair = when (id) { R.id.edit_hair_short -> HairStyle.SHORT; R.id.edit_hair_long -> HairStyle.LONG; else -> HairStyle.BUZZ }
+            if (!suppressEditEvents) markDirty()
+        }
+        applyButton.setOnClickListener { applyEdits() }
+        findViewById<View>(R.id.edit_reset).setOnClickListener {
+            editBars[0].progress = 50
+            for (k in 1..3) editBars[k].progress = 50
+        }
+        resetShape(HairStyle.BUZZ)
     }
 
-    private fun resetShape() {
+    private fun markDirty() {
+        editDirty = true
+        applyButton.isEnabled = true
+    }
+
+    /** Puts every editor control back to neutral (used for a brand-new scan result). */
+    private fun resetShape(hair: HairStyle) {
+        suppressEditEvents = true
         editBars.forEach { it.progress = 51; it.progress = 50 }   // force a change event so labels update
+        editHair = hair
+        editHairGroup.check(when (hair) { HairStyle.SHORT -> R.id.edit_hair_short; HairStyle.LONG -> R.id.edit_hair_long; else -> R.id.edit_hair_buzz })
+        suppressEditEvents = false
+        editDirty = false
+        applyButton.isEnabled = false
     }
 
     private fun confirmDiscard() {
@@ -733,7 +804,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         showStatus("Building 3D model…")
     }
 
-    private fun enterPreview(result: ScanResult, check: android.graphics.Bitmap?) {
+    private fun enterPreview(result: ScanResult, check: android.graphics.Bitmap?, fresh: Boolean) {
         state = State.PREVIEW
         pendingResult = result
         pendingCheck = check
@@ -743,14 +814,23 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         previewView.visibility = View.VISIBLE
         previewView.onResume()
         previewView.show(result)
-        resetShape()
+        previewView.setTransform(shapeSize, 0f, 0f, 0f)
+        if (fresh) resetShape(lastSettings.hairStyle)
+        editDirty = false
+        applyButton.isEnabled = false
+        val selfieEdits = selfieInput != null
+        for (k in 1..3) (editBars[k].parent as View).visibility = if (selfieEdits) View.VISIBLE else View.GONE
+        editHairGroup.visibility = if (selfieEdits) View.VISIBLE else View.GONE
+        applyButton.visibility = if (selfieEdits) View.VISIBLE else View.GONE
         editPanel.visibility = View.VISIBLE
         actionButton.text = "Save"
         actionButton.isEnabled = true
         secondaryButton.text = "Discard"
         secondaryButton.visibility = View.VISIBLE
         val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
-        showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin, resize or move it with the sliders (X = left/right, Y = up/down, Z = forward/back), then save it with a name or discard it.")
+        showStatus("Preview · ${result.triangleCount} triangles · ${result.textureSize}px texture · $style\nDrag to spin. " +
+            (if (selfieInput != null) "Move your face on the head or change the hair, then tap Apply changes. " else "") +
+            "Save it with a name, or discard it.")
     }
 
     private fun enterDone(message: String) {
@@ -770,6 +850,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         if (wasRunning) surfaceView.onPause()
         pendingResult = null
         pendingCheck?.recycle(); pendingCheck = null
+        selfieInput = null
         previewView.onPause()
         previewView.visibility = View.GONE
         surfaceView.visibility = View.VISIBLE
@@ -811,7 +892,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val MIN_INTERVAL_MS = 250L
         private const val MAX_KEYFRAMES = 60
         private const val MIN_KEYFRAMES = 8
-        private const val MAX_MOVE = 0.15f
+        /** How far the face can be moved on the head: ±2 cm sideways, ±3 cm up/down, ±2 cm in/out. */
+        private val FACE_MOVE = floatArrayOf(0.02f, 0.03f, 0.02f)
         private const val LOW_TRIANGLES = 1500
         private const val HIGH_TRIANGLES = 3500
     }

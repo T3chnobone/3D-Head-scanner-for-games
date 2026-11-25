@@ -22,6 +22,8 @@ class SelfieHead(
     faceVertices: FloatArray,
     private val faceTriangles: IntArray,
     val hairStyle: HairStyle = HairStyle.BUZZ,
+    /** Moves the face relative to the generic head (metres, +X right, +Y up, +Z forward). */
+    faceOffset: FloatArray = FloatArray(3),
 ) {
     private val verts = faceVertices
 
@@ -29,7 +31,7 @@ class SelfieHead(
     private val faceW: Float
 
     // Generic head parameters
-    val headCx = 0f
+    val headCx: Float
     val headCy: Float
     val headCz: Float
     private val rx: Float; private val ry: Float; private val rz: Float
@@ -59,14 +61,17 @@ class SelfieHead(
 
         val topOfHead = maxY + 0.045f * scale
         val jawLine = minY + 0.025f * scale
-        headCy = (topOfHead + jawLine) / 2
+        // Moving the face by +offset on the head = moving the head by -offset around the face.
+        val ox = faceOffset[0]; val oy = faceOffset[1]; val oz = faceOffset[2]
+        headCx = -ox
+        headCy = (topOfHead + jawLine) / 2 - oy
         ry = (topOfHead - jawLine) / 2
         rx = faceW / 2 * 1.05f
         rz = 0.10f * scale
-        headCz = noseZ - 0.025f * scale - rz
+        headCz = noseZ - 0.025f * scale - rz - oz
         neckR = 0.056f * scale
         neckCz = headCz - 0.012f * scale
-        neckBottom = minY - 0.10f * scale
+        neckBottom = minY - 0.10f * scale - oy
 
         gw = ceil(faceW / cell).toInt() + 3
         gh = ceil((maxY - minY) / cell).toInt() + 3
@@ -140,7 +145,7 @@ class SelfieHead(
     fun genericSdf(x: Float, y: Float, z: Float): Float {
         val ex = (x - headCx) / rx; val ey = (y - headCy) / ry; val ez = (z - headCz) / rz
         val head = (sqrt(ex * ex + ey * ey + ez * ez) - 1f) * min(rx, min(ry, rz))
-        val nr = sqrt(x * x + (z - neckCz) * (z - neckCz)) - neckR
+        val nr = sqrt((x - headCx) * (x - headCx) + (z - neckCz) * (z - neckCz)) - neckR
         val neck = max(nr, max(y - headCy, neckBottom - 0.02f - y))
         return smin(head, neck, 0.012f)
     }
@@ -198,9 +203,9 @@ class SelfieHead(
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
         val pad = if (hairStyle == HairStyle.BUZZ) 0.02f else 0.045f
-        val x0 = -(rx + pad); val x1 = rx + pad
-        val y0 = neckBottom; val y1 = headCy + ry + pad
-        val z0 = headCz - rz - pad; val z1 = noseZ + pad
+        val x0 = min(headCx - rx, minX) - pad; val x1 = max(headCx + rx, maxX) + pad
+        val y0 = neckBottom; val y1 = max(headCy + ry, maxY) + pad
+        val z0 = headCz - rz - pad; val z1 = max(noseZ, headCz + rz) + pad
         val nx = ceil((x1 - x0) / voxel).toInt() + 1
         val ny = ceil((y1 - y0) / voxel).toInt() + 1
         val nz = ceil((z1 - z0) / voxel).toInt() + 1
@@ -217,6 +222,17 @@ class SelfieHead(
             }
         }
         return vol
+    }
+
+    val faceMoved = faceOffset.any { abs(it) > 0.002f }
+
+    /** True on (or just around) the real face surface. */
+    fun isFaceArea(x: Float, y: Float, z: Float): Boolean {
+        val fi = gx(x); val fj = gy(y)
+        val i = fi.toInt(); val j = fj.toInt()
+        if (fi < 0 || fj < 0 || i >= gw || j >= gh) return false
+        val zf = zFace[j * gw + i]
+        return !zf.isNaN() && z > zf - 0.025f
     }
 
     /** True on hair geometry added by the hairstyle (outside the bald head). */
