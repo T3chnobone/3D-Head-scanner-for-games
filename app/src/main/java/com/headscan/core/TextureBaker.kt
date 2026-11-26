@@ -356,6 +356,113 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
         }
     }
 
+    /**
+     * Takes the lighting out of the photo on the face (where [amount] > 0), leaving flat, even skin colour:
+     *  1. Fits how each colour channel's brightness follows the surface direction (a soft light from one side and
+     *     its colour, first-order spherical harmonics) over plain skin ([use]) and divides it out.
+     *  2. Evens out the large shadows left over that direction can't explain (e.g. under the brows and nose).
+     *  3. Tones down shiny highlights.
+     */
+    fun removeLighting(texture: IntArray, amount: FloatArray, targetLuma: Float, use: (Float, Float, Float) -> Boolean) {
+        val ata = Array(4) { DoubleArray(4) }
+        val atb = Array(3) { DoubleArray(4) }
+        var count = 0
+        for (t in texelIndex.indices) {
+            val i = texelIndex[t]
+            if (amount[i] < 0.8f) continue
+            val x = texelPos[3 * t]; val y = texelPos[3 * t + 1]; val z = texelPos[3 * t + 2]
+            if (!use(x, y, z)) continue
+            val b = doubleArrayOf(1.0, texelNrm[3 * t].toDouble(), texelNrm[3 * t + 1].toDouble(), texelNrm[3 * t + 2].toDouble())
+            val c = texture[i]
+            val rgb = doubleArrayOf(((c shr 16) and 255).toDouble(), ((c shr 8) and 255).toDouble(), (c and 255).toDouble())
+            for (r in 0 until 4) { for (k in 0 until 4) ata[r][k] += b[r] * b[k]; for (ch in 0 until 3) atb[ch][r] += b[r] * rgb[ch] }
+            count++
+        }
+        if (count >= 200) {
+            for (r in 0 until 4) ata[r][r] += count * 1e-3      // a little damping
+            val coef = Array(3) { ch -> solve4(ata, atb[ch]) }
+            // Average shading per channel over the fitted skin, so the overall brightness and colour are kept.
+            val mean = DoubleArray(3)
+            for (t in texelIndex.indices) {
+                val i = texelIndex[t]
+                if (amount[i] < 0.8f || !use(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])) continue
+                for (ch in 0 until 3) mean[ch] += coef[ch][0] + coef[ch][1] * texelNrm[3 * t] + coef[ch][2] * texelNrm[3 * t + 1] + coef[ch][3] * texelNrm[3 * t + 2]
+            }
+            for (ch in 0 until 3) mean[ch] /= count
+            // Correction per texel, smoothed a little so small misfits at sharp edges (nose, face outline) don't
+            // leave thin rings.
+            val n0 = size * size
+            val ratio = Array(3) { FloatArray(n0) }
+            val has = FloatArray(n0)
+            for (t in texelIndex.indices) {
+                val i = texelIndex[t]
+                if (amount[i] <= 0.05f) continue
+                val nx = texelNrm[3 * t]; val ny = texelNrm[3 * t + 1]; val nz = texelNrm[3 * t + 2]
+                for (ch in 0 until 3) {
+                    val cf = coef[ch]
+                    val shade = cf[0] + cf[1] * nx + cf[2] * ny + cf[3] * nz
+                    ratio[ch][i] = (mean[ch] / max(shade, 0.25 * mean[ch])).toFloat().coerceIn(0.6f, 1.8f)
+                }
+                has[i] = 1f
+            }
+            val rr = max(2, size / 256)
+            val bh = blur(has, rr)
+            val smooth = Array(3) { ch -> blur(FloatArray(n0) { ratio[ch][it] * has[it] }, rr) }
+            for (i in 0 until n0) {
+                val a = amount[i]
+                if (a <= 0.05f || has[i] == 0f || bh[i] < 1e-3f) continue
+                val c = texture[i]
+                var out = 0xFF shl 24
+                for (ch in 0 until 3) {
+                    val k = 1f + (smooth[ch][i] / bh[i] - 1f) * a
+                    val sh = 16 - 8 * ch
+                    out = out or ((((c shr sh) and 255) * k).toInt().coerceIn(0, 255) shl sh)
+                }
+                texture[i] = out
+            }
+        }
+        // 2. Large leftover shadows.
+        delight(texture, amount, targetLuma, strength = 1f)
+        // 3. Highlights: brightness well above the surrounding skin is pulled back towards it.
+        val n = size * size
+        val lum = FloatArray(n); val wt = FloatArray(n)
+        for (i in 0 until n) if (amount[i] > 0.05f) {
+            val c = texture[i]
+            lum[i] = 0.299f * ((c shr 16) and 255) + 0.587f * ((c shr 8) and 255) + 0.114f * (c and 255)
+            wt[i] = 1f
+        }
+        val r = max(3, size / 128)
+        val bl = blur(FloatArray(n) { lum[it] * wt[it] }, r); val bw = blur(wt, r)
+        for (i in 0 until n) {
+            if (amount[i] <= 0.05f || bw[i] < 0.3f || lum[i] <= 0f) continue
+            val local = bl[i] / bw[i]
+            val cap = local * 1.1f
+            if (lum[i] <= cap) continue
+            val target = cap + (lum[i] - cap) * 0.3f
+            val k = 1f + (target / lum[i] - 1f) * amount[i]
+            val c = texture[i]
+            fun ch(sh: Int) = (((c shr sh) and 255) * k).toInt().coerceIn(0, 255)
+            texture[i] = (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+    }
+
+    private fun solve4(a0: Array<DoubleArray>, b0: DoubleArray): DoubleArray {
+        val a = Array(4) { a0[it].copyOf() }; val b = b0.copyOf()
+        for (col in 0 until 4) {
+            var piv = col
+            for (r in col + 1 until 4) if (kotlin.math.abs(a[r][col]) > kotlin.math.abs(a[piv][col])) piv = r
+            val tr = a[col]; a[col] = a[piv]; a[piv] = tr
+            val tb = b[col]; b[col] = b[piv]; b[piv] = tb
+            if (kotlin.math.abs(a[col][col]) < 1e-12) continue
+            for (r in 0 until 4) if (r != col) {
+                val f = a[r][col] / a[col][col]
+                for (k in col until 4) a[r][k] -= f * a[col][k]
+                b[r] -= f * b[col]
+            }
+        }
+        return DoubleArray(4) { if (kotlin.math.abs(a[it][it]) < 1e-12) 0.0 else b[it] / a[it][it] }
+    }
+
     private fun blur(src: FloatArray, r: Int): FloatArray {
         val tmp = FloatArray(src.size); val out = FloatArray(src.size)
         for (y in 0 until size) {

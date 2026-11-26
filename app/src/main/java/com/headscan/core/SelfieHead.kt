@@ -67,6 +67,23 @@ class SelfieHead(
         faceW = maxX - minX
         val scale = faceW / 0.14f    // typical ARCore face mesh width
 
+        gw = ceil(faceW / cell).toInt() + 3
+        gh = ceil((maxY - minY) / cell).toInt() + 3
+        zFace = FloatArray(gw * gh) { Float.NaN }
+        rasterizeFace()
+        // Depth of the upper forehead: the skull is placed so its front meets the face there, instead of sticking
+        // out in front of it (which left a dent along the top of the face).
+        val yF = maxY - 0.015f
+        var fSum = 0f; var fN = 0
+        val midX = (minX + maxX) / 2
+        for (j in 0 until gh) for (i in 0 until gw) {
+            val z = zFace[j * gw + i]
+            if (z.isNaN()) continue
+            val x = minX + (i - 1) * cell; val y = minY + (j - 1) * cell
+            if (y > maxY - 0.022f && y < maxY - 0.008f && abs(x - midX) < 0.025f) { fSum += z; fN++ }
+        }
+        val zForehead = if (fN > 0) fSum / fN else noseZ - 0.03f * scale
+
         val topOfHead = maxY + 0.045f * scale
         val jawLine = minY + 0.025f * scale
         // Moving the face by +offset on the head = moving the head by -offset around the face.
@@ -79,24 +96,21 @@ class SelfieHead(
             ry = (topOfHead - jawLine) / 2
             rx = rx0
             rz = rz0
-            headCz = noseZ - 0.025f * scale - rz0 - oz
         } else {
             // The bottom of the skull stays at the jaw; top, width, front and back come from the measurement.
             headCy = (shape.top + jawLine - oy) / 2
             ry = (shape.top - (jawLine - oy)) / 2
             rx = shape.rx
             rz = (shape.zFront - shape.zBack) / 2
-            headCz = (shape.zFront + shape.zBack) / 2
         }
+        // Front of the skull just behind the upper forehead (the measured depth front-to-back is kept).
+        val eyF = ((yF - headCy) / ry).coerceIn(-0.95f, 0.95f)
+        headCz = zForehead - 0.002f - rz * sqrt(1f - eyF * eyF) - oz
         widthScale = (rx / rx0).coerceIn(0.7f, 1.4f)
         neckR = 0.056f * scale * ((widthScale + (rz / rz0).coerceIn(0.7f, 1.4f)) / 2)
         neckCz = headCz - 0.012f * scale
         neckBottom = minY - 0.10f * scale - oy
 
-        gw = ceil(faceW / cell).toInt() + 3
-        gh = ceil((maxY - minY) / cell).toInt() + 3
-        zFace = FloatArray(gw * gh) { Float.NaN }
-        rasterizeFace()
         blend = FloatArray(gw * gh)
         computeBlend(borderCells = (0.012f / cell).toInt())
     }
@@ -491,7 +505,10 @@ class SelfieHead(
         // shelf sticking out round the neck.
         val low = smoothstep(minY + 0.004f, minY + 0.045f, y)
         val faceSlab = max(max(fz, (zf - 0.07f) - z), g - (0.004f + 0.026f * w * low))
-        val faceField = if (z > zf) fz else min(g, faceSlab)
+        // In front of the face surface the face may cut into the generic head only well inside the face (eye
+        // sockets, under the nose); towards its border it can only add, so where the face sits a little behind the
+        // skull (top of the forehead, temples) no groove is cut along the join.
+        val faceField = if (z > zf) min(fz, g + 0.03f * smoothstep(0.65f, 1f, w)) else min(g, faceSlab)
         // Fade from the face to the plain head across the border band (in x/y), so the jagged edge of the
         // face mesh can't leave ridges or blades on the cheeks and jaw.
         return w * faceField + (1 - w) * g

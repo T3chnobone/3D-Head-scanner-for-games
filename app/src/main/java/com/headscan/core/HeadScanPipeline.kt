@@ -353,7 +353,10 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         val faceAmt = baker.texelMap { x, y, z -> head.faceMask(x, y, z) }
         val sk = hf.skin
         val skinLuma = 0.299f * ((sk shr 16) and 255) + 0.587f * ((sk shr 8) and 255) + 0.114f * (sk and 255)
-        baker.delight(texture, faceAmt, skinLuma)
+        // Take the lighting out of the photo: plain skin only for the fit (not eyes, brows, lips or hair).
+        baker.removeLighting(texture, faceAmt, skinLuma) { x, y, z ->
+            !head.isDetailArea(x, y, z) && head.hairColorAmount(x, y, z) < 0.05f && y < head.maxY - 0.02f
+        }
         baker.mirrorWeakSide(texture, (head.minX + head.maxX) / 2) { x, y, z -> head.faceMask(x, y, z) > 0.5f }
         val h = head.maxY - head.minY
         val patchSize = 40

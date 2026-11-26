@@ -29,6 +29,8 @@ class SyntheticScanTest {
 
     /** When true, the synthetic person has skin, eyes, lips and brown hair instead of test stripes. */
     var skinMode = false
+    /** When true, the synthetic person is lit by a strong light from one side (to test de-lighting). */
+    var sideLight = false
 
     fun trueColor(px: Float, py: Float, pz: Float): IntArray {
         if (skinMode) {
@@ -110,6 +112,15 @@ class SyntheticScanTest {
             val t = march(cam[12], cam[13], cam[14], dx, dy, dz)
             argb[v * cW + u] = if (t > 0) {
                 val col = trueColor(cam[12] + dx * t, cam[13] + dy * t, cam[14] + dz * t)
+                if (sideLight) {
+                    // Strong warm light from the upper left, dim fill: like a window to one side.
+                    val px = cam[12] + dx * t; val py = cam[13] + dy * t; val pz = cam[14] + dz * t; val e = 0.001f
+                    var gx = sdf(px + e, py, pz) - sdf(px - e, py, pz); var gy = sdf(px, py + e, pz) - sdf(px, py - e, pz); var gz = sdf(px, py, pz + e) - sdf(px, py, pz - e)
+                    val gl = sqrt(gx * gx + gy * gy + gz * gz); gx /= gl; gy /= gl; gz /= gl
+                    val lam = max(0f, -0.6f * gx + 0.5f * gy + 0.62f * gz)
+                    val k = 0.35f + 0.85f * lam
+                    col[0] = (col[0] * k * 1.05f).toInt().coerceIn(0, 255); col[1] = (col[1] * k).toInt().coerceIn(0, 255); col[2] = (col[2] * k * 0.9f).toInt().coerceIn(0, 255)
+                }
                 (0xFF shl 24) or (col[0] shl 16) or (col[1] shl 8) or col[2]
             } else 0xFF202020.toInt()
         }
@@ -257,11 +268,22 @@ class SyntheticScanTest {
     fun selfieFaceMoved() { selfie(1500, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0.015f, -0.02f, 0.02f)) }
 
     @Test
+    fun lightingRemoved() {
+        skinMode = true
+        try {
+            selfie(1500, hair = HairStyle.NONE, offset = FloatArray(3), outName = "evenly_lit")
+            images.clear()
+            sideLight = true
+            selfie(1500, hair = HairStyle.NONE, offset = FloatArray(3), outName = "side_lit")
+        } finally { skinMode = false; sideLight = false; images.clear() }
+    }
+
+    @Test
     fun headMeasuredFromPhotos() {
         skinMode = true
         try {
             // Synthetic skull: half width 0.08, top 0.11 above the centre, back 0.10 behind it (no hair).
-            val r = selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "measured", measure = true)
+            val r = selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = FloatArray(3), outName = "measured", measure = true)
             val fit = r.headFit
             assertTrue(fit != null, "head measured")
             val sh = fit.shape
@@ -270,9 +292,9 @@ class SyntheticScanTest {
             assertTrue(sh.rx in 0.07f..0.09f, "width")
             assertTrue(sh.top in 0.09f..0.12f, "top")
             assertTrue(sh.zBack in -0.115f..-0.08f, "back")
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "unmeasured")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = FloatArray(3), outName = "unmeasured")
             // A failed cut-out falls back to average proportions.
-            val bad = selfie(1500, hair = HairStyle.NONE, offset = floatArrayOf(0f, 0f, -0.02f), outName = "measure_failed", measure = true, emptyMasks = true)
+            val bad = selfie(1500, hair = HairStyle.NONE, offset = FloatArray(3), outName = "measure_failed", measure = true, emptyMasks = true)
             assertTrue(bad.headFit == null, "fallback")
         } finally { skinMode = false; images.clear() }
     }

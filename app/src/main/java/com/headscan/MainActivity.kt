@@ -1270,7 +1270,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val HUE_NATURAL_END = 0.5f
         private const val START_RETRY_MS = 15000L
         /** New selfie heads start with the face 20 mm in. */
-        private const val DEFAULT_FACE_Z = -0.02f
+        private const val DEFAULT_FACE_Z = 0f      // the skull is now placed from the forehead depth
         private const val LOW_TRIANGLES = 1500
         private const val HIGH_TRIANGLES = 3500
     }
