@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.22**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.23**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:

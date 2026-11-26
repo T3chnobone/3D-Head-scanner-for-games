@@ -222,16 +222,20 @@ class SelfieHead(
         // Cranium: main ellipsoid plus a rounded back of the skull (occiput), a little narrower at the temples.
         val ex = (x - headCx) / rx; val ey = (y - headCy) / ry; val ez = (z - headCz) / rz
         val temple = 1f - 0.06f * smoothstep(0.0f, 0.7f, ez) * smoothstep(-0.2f, 0.4f, ey)
-        val exT = ex / temple
+        // Below the ears the skull narrows towards the neck (instead of a wide flat underside that leaves a shelf).
+        val low = smoothstep(-0.15f, -0.95f, ey)
+        val exT = ex / (temple * (1f - 0.3f * low))
         val cranium = (sqrt(exT * exT + ey * ey + ez * ez) - 1f) * min(rx, min(ry, rz))
         val occ = ellipsoid(x - headCx, y - (headCy + 0.1f * ry), z - (headCz - 0.35f * rz), rx * 0.88f, ry * 0.72f, rz * 0.7f)
         var head = smin(cranium, occ, 0.01f)
-        // Jaw: from the chin back to the angle of the jaw below each ear.
-        val chinX = (minX + maxX) / 2; val chinY = minY + 0.03f * sc; val chinZ = noseZ - 0.07f * sc
-        val gonY = earY - 0.06f * sc; val gonZ = earZ + 0.024f * sc; val gonX = 0.05f * sc * widthScale
-        val jawL = capsule(x, y, z, chinX, chinY, chinZ, headCx - gonX, gonY, gonZ, 0.014f * sc, 0.012f * sc)
-        val jawR = capsule(x, y, z, chinX, chinY, chinZ, headCx + gonX, gonY, gonZ, 0.014f * sc, 0.012f * sc)
-        head = smin(head, min(jawL, jawR), 0.01f * sc)
+        // Jaw: just the back of the jawline, from under the cheek to the angle of the jaw below each ear, slim and
+        // tucked inside so it shapes the side of the face. (A full bar round to the chin stood out as a collar:
+        // the scanned face already has the chin.)
+        val gonY = earY - 0.055f * sc; val gonZ = earZ + 0.022f * sc; val gonX = 0.047f * sc * widthScale
+        val jfY = minY + 0.04f * sc; val jfZ = noseZ - 0.08f * sc; val jfX = 0.035f * sc * widthScale
+        val jawL = capsule(x, y, z, headCx - jfX, jfY, jfZ, headCx - gonX, gonY, gonZ, 0.009f * sc, 0.01f * sc)
+        val jawR = capsule(x, y, z, headCx + jfX, jfY, jfZ, headCx + gonX, gonY, gonZ, 0.009f * sc, 0.01f * sc)
+        head = sminPoly(head, min(jawL, jawR), 0.012f * sc)
         // Cheekbones bridging the face to the sides of the head.
         val cbY = minY + 0.56f * (maxY - minY); val cbZ = noseZ - 0.065f * sc
         val cheek = min(
@@ -239,12 +243,24 @@ class SelfieHead(
             ellipsoid(x - (headCx + 0.048f * sc), y - cbY, z - cbZ, 0.012f * sc, 0.01f * sc, 0.018f * sc),
         )
         head = smin(head, cheek, 0.008f * sc)
-        // Neck: slightly wider side to side and a touch wider at the base; flat cut at the bottom.
-        val t = ((headCy - y) / (headCy - neckBottom)).coerceIn(0f, 1f)
-        val nx = (x - headCx) / 1.06f
-        val nr = sqrt(nx * nx + (z - neckCz) * (z - neckCz)) - neckR * (1f + 0.05f * t)
+        // Neck: an oval column, a little slimmer side to side than front to back, leaning forward towards its
+        // base like a real neck, flaring slightly into the shoulders; flat cut at the bottom.
+        val topY = earY - 0.01f * sc
+        val tN = ((topY - y) / (topY - (neckBottom - 0.02f))).coerceIn(0f, 1f)      // 0 under the skull, 1 at the base
+        val axisZ = neckCz + 0.024f * sc * tN
+        val flare = smoothstep(0.65f, 1f, tN)
+        val na = neckR * 0.9f * (1f + 0.16f * flare); val nb = neckR * 0.98f * (1f + 0.08f * flare)
+        val qx = (x - headCx) / na; val qz = (z - axisZ) / nb
+        val nr = (sqrt(qx * qx + qz * qz) - 1f) * min(na, nb)
         val neck = max(nr, max(y - headCy, neckBottom - 0.02f - y))
-        return smin(head, neck, 0.012f)
+        // A wide, soft join: fills under the jaw and behind the ears, no ridge where neck meets head.
+        return sminPoly(head, neck, 0.026f * sc)
+    }
+
+    /** Polynomial smooth minimum: blends only within [k] of the crease, at most k/4 extra material. */
+    private fun sminPoly(a: Float, b: Float, k: Float): Float {
+        val h = (k - abs(a - b)).coerceAtLeast(0f) / k
+        return min(a, b) - h * h * k * 0.25f
     }
 
     /** Capsule from a to b with radius going from ra to rb. */
@@ -471,11 +487,16 @@ class SelfieHead(
     private fun headAndFace(x: Float, y: Float, z: Float): Float {
         val g = headWithHair(x, y, z)
         val fs = faceSample(x, y) ?: return g
-        val zf = fs[0]; val w = fs[1]
+        // Under the chin the face mesh turns edge-on and would leave a shelf: fade it out there so the jaw and
+        // neck take over smoothly.
+        val zf = fs[0]; val w = fs[1] * smoothstep(minY + 0.002f, minY + 0.022f, y)
         val fz = (z - zf) * 0.85f
         // The face may only add material close to the generic head, so steep mesh borders can't form flaps.
         // Near the border the allowance shrinks to a few mm, so nothing sticks out at the sides of the face.
-        val faceSlab = max(max(fz, (zf - 0.07f) - z), g - (0.004f + 0.026f * w))
+        // Near the bottom of the face (chin and jaw underside) the allowance is small too, or the face would form a
+        // shelf sticking out round the neck.
+        val low = smoothstep(minY + 0.004f, minY + 0.045f, y)
+        val faceSlab = max(max(fz, (zf - 0.07f) - z), g - (0.004f + 0.026f * w * low))
         val faceField = if (z > zf) fz else min(g, faceSlab)
         // Fade from the face to the plain head across the border band (in x/y), so the jagged edge of the
         // face mesh can't leave ridges or blades on the cheeks and jaw.
