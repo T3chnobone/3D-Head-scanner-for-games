@@ -9,7 +9,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Hair added to the generic head in Selfie mode. */
-enum class HairStyle { CLASSIC_PART, CLASSIC_SLICK, CLASSIC_TOUSLED, SWEPT, SPIKY, SLICKED_BACK, CURTAINS, FAUX_HAWK, LONG_LOCKS, BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
+enum class HairStyle { NONE, CLASSIC_PART, CLASSIC_SLICK, CLASSIC_TOUSLED, SWEPT, SPIKY, SLICKED_BACK, CURTAINS, FAUX_HAWK, LONG_LOCKS, BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
 
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
@@ -24,6 +24,8 @@ class SelfieHead(
     val hairStyle: HairStyle = HairStyle.BUZZ,
     /** Moves the face relative to the generic head (metres, +X right, +Y up, +Z forward). */
     faceOffset: FloatArray = FloatArray(3),
+    /** 0..1: how much of the face mesh to use (0 = eyes, nose and mouth only; 1 = all of it). */
+    private val faceCapture: Float = 1f,
 ) {
     private val verts = faceVertices
 
@@ -86,9 +88,26 @@ class SelfieHead(
         computeBlend(borderCells = (0.012f / cell).toInt())
     }
 
+    /**
+     * Whether a face-mesh vertex is inside the captured region: an ellipse that grows from the core
+     * (outer eye corners, nose, around the lips) at [faceCapture] = 0 to beyond the whole mesh at 1.
+     */
+    private fun inCapture(i: Int): Boolean {
+        if (faceCapture >= 0.999f) return true
+        val h = maxY - minY
+        val k = faceCapture.coerceIn(0f, 1f)
+        val ax = faceW * (0.36f + 0.4f * k)
+        val ay = h * (0.4f + 0.36f * k)
+        val cx = (minX + maxX) / 2
+        val cy = minY + h * (0.46f + 0.04f * k)
+        val dx = (verts[3 * i] - cx) / ax; val dy = (verts[3 * i + 1] - cy) / ay
+        return dx * dx + dy * dy <= 1f
+    }
+
     private fun rasterizeFace() {
         for (t in 0 until faceTriangles.size / 3) {
             val a = faceTriangles[3 * t]; val b = faceTriangles[3 * t + 1]; val c = faceTriangles[3 * t + 2]
+            if (!inCapture(a) || !inCapture(b) || !inCapture(c)) continue
             val ax = gx(verts[3 * a]); val ay = gy(verts[3 * a + 1]); val az = verts[3 * a + 2]
             val bx = gx(verts[3 * b]); val by = gy(verts[3 * b + 1]); val bz = verts[3 * b + 2]
             val cx = gx(verts[3 * c]); val cy = gy(verts[3 * c + 1]); val cz = verts[3 * c + 2]
@@ -193,7 +212,7 @@ class SelfieHead(
 
     /** Hair thickness grown out from the scalp for the chosen style (metres). */
     fun hairThickness(x: Float, y: Float, z: Float): Float {
-        if (hairStyle == HairStyle.BUZZ) return 0f
+        if (hairStyle == HairStyle.BUZZ || hairStyle == HairStyle.NONE) return 0f
         val cov = scalpCoverage(x, y, z)
         if (cov <= 0f) return 0f
         val u = (y - headCy) / ry
@@ -251,7 +270,7 @@ class SelfieHead(
                 val g = lx / 0.036f
                 0.003f + 0.008f * exp(-g * g) * smoothstep(0.1f, 0.8f, u)
             }
-            HairStyle.BUZZ -> 0f
+            HairStyle.BUZZ, HairStyle.NONE -> 0f
         }
         return t * cov
     }
@@ -288,6 +307,7 @@ class SelfieHead(
         val c = scalpCoverage(x, y, z)
         return when (hairStyle) {
             HairStyle.BUZZ -> c * 0.6f
+            HairStyle.NONE -> 0f
             HairStyle.MOHAWK -> {
                 // Full colour on the crest, light stubble on the shaved sides.
                 val g = (x - headCx) / 0.016f
@@ -668,7 +688,7 @@ class SelfieHead(
 
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
-        val pad = when (hairStyle) { HairStyle.BUZZ -> 0.02f; HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.SLICKED_BACK, HairStyle.LONG_LOCKS -> 0.06f; HairStyle.SPIKY, HairStyle.FAUX_HAWK -> 0.08f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
+        val pad = when (hairStyle) { HairStyle.BUZZ, HairStyle.NONE -> 0.02f; HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.SLICKED_BACK, HairStyle.LONG_LOCKS -> 0.06f; HairStyle.SPIKY, HairStyle.FAUX_HAWK -> 0.08f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
         val x0 = min(headCx - rx, minX) - pad; val x1 = max(headCx + rx, maxX) + pad
         val y0 = neckBottom; val y1 = max(headCy + ry, maxY) + pad
         val z0 = headCz - rz - pad; val z1 = max(noseZ, headCz + rz) + pad

@@ -275,8 +275,21 @@ class SyntheticScanTest {
     @Test
     fun selfieFaceMoved() = selfie(1500, hair = HairStyle.CREW_CUT, offset = floatArrayOf(0.015f, -0.02f, 0.02f))
 
+    @Test
+    fun settingsOptions() {
+        skinMode = true
+        try {
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.NONE, outName = "opt_nohair")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_face0", faceCapture = 0f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_face50", faceCapture = 0.5f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_auburn", recolor = HairColor.NATURAL + 0.36f to 0f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_blonde", recolor = HairColor.NATURAL + 0.75f to 0f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_grey", recolor = HairColor.NATURAL + 0.92f to 0f)
+        } finally { skinMode = false; images.clear() }
+    }
+
     fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3), outName: String? = null,
-               recolor: Pair<Float?, Float>? = null) {
+               recolor: Pair<Float?, Float>? = null, faceCapture: Float = 1f) {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
@@ -307,7 +320,7 @@ class SyntheticScanTest {
             kfs.add(Keyframe(m, invertRigid(m), ShortArray(1), 1, 1, world.depthIntrinsics.scaledTo(1, 1), world.colorIntrinsics, world.colorRef))
         }
         val res0 = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair,
-            faceOffsetX = offset[0], faceOffsetY = offset[1], faceOffsetZ = offset[2])).runSelfie(
+            faceOffsetX = offset[0], faceOffsetY = offset[1], faceOffsetZ = offset[2], faceCapture = faceCapture)).runSelfie(
             kfs, fv, tris.toIntArray(), { images[it.colorRef]!! },
         )
         var res = res0

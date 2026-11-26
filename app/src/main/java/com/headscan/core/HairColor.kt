@@ -30,8 +30,38 @@ object HairColor {
         return out
     }
 
+    /**
+     * [hue] values from this up to +1 select a natural shade instead of a rainbow hue:
+     * NATURAL + t picks position t (0..1) along [NATURAL_SHADES], from black to white.
+     */
+    const val NATURAL = 1000f
+
+    /** Real hair colours, darkest to lightest: black, browns, auburn, ginger, blondes, grey, white. */
+    val NATURAL_SHADES = intArrayOf(
+        0xFF141110.toInt(), 0xFF2B1D15.toInt(), 0xFF4A3121.toInt(), 0xFF6B4630.toInt(), 0xFF7A3A22.toInt(),
+        0xFFA4532B.toInt(), 0xFFB57A52.toInt(), 0xFF9C7E5A.toInt(), 0xFFC9A46A.toInt(), 0xFFE3CFA0.toInt(),
+        0xFF8E8A86.toInt(), 0xFFD9D7D3.toInt(),
+    )
+
+    fun naturalShade(t: Float): Int {
+        val x = t.coerceIn(0f, 1f) * (NATURAL_SHADES.size - 1)
+        val i = x.toInt().coerceAtMost(NATURAL_SHADES.size - 2); val f = x - i
+        val a = NATURAL_SHADES[i]; val b = NATURAL_SHADES[i + 1]
+        fun ch(sh: Int) = (((a shr sh) and 255) * (1 - f) + ((b shr sh) and 255) * f).toInt().coerceIn(0, 255)
+        return (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+    }
+
     /** The flat hair colour for the given slider values. */
     fun target(base: Int, hue: Float?, tone: Float): Int {
+        if (hue != null && hue >= NATURAL) {
+            val c = naturalShade(hue - NATURAL)
+            // Tone: darker by scaling, lighter by mixing toward white.
+            fun ch(sh: Int): Int {
+                val v = ((c shr sh) and 255).toFloat()
+                return (if (tone < 0) v * (1f + tone * 0.7f) else v + (255f - v) * tone * 0.5f).toInt().coerceIn(0, 255)
+            }
+            return (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
         if (hue == null) {
             // Natural colour, made darker or lighter.
             val k = if (tone < 0) 1f + tone * 0.75f else 1f + tone * 1.6f

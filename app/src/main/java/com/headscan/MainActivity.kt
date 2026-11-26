@@ -123,6 +123,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var targetTriangles = LOW_TRIANGLES
     private lateinit var selfie: SelfieCapture
     private var headStyle = HeadStyle.REALISTIC
+    private var faceCapturePercent = 100
     private var hairStyle = HairStyle.SWEPT
     private lateinit var hairGroup: View
     private lateinit var editPanel: View
@@ -173,12 +174,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         hairGroup.visibility = if (selfieMode) View.VISIBLE else View.GONE
         setupShapeEditor()
         setupHairColorSliders()
-        val styleGroup = findViewById<RadioGroup>(R.id.style_group)
-        styleGroup.check(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) R.id.style_goldeneye else R.id.style_realistic)
-        styleGroup.setOnCheckedChangeListener { _, id ->
-            headStyle = if (id == R.id.style_goldeneye) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
-            prefs.edit().putString("style", headStyle.name).apply()
-        }
+        faceCapturePercent = prefs.getInt("face_capture", 100)
+        findViewById<View>(R.id.settings_button).setOnClickListener { showSettings() }
 
         selfieMode = prefs.getBoolean("selfie", false)
         targetTriangles = prefs.getInt("triangles", LOW_TRIANGLES)
@@ -617,7 +614,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
-            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f)
+            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f, faceCapture = faceCapturePercent / 100f)
         lastSettings = settings
         showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
@@ -795,9 +792,17 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val hueLabel = findViewById<TextView>(R.id.hair_hue_label)
         val toneLabel = findViewById<TextView>(R.id.hair_tone_label)
         val density = resources.displayMetrics.density
-        // Rainbow track: the grey start means "natural colour".
-        val rainbow = intArrayOf(0xFF8A7560.toInt(), 0xFF8A7560.toInt()) +
-            (0..6).map { com.headscan.core.HairColor.hsv(it * 60f, 0.9f, 0.95f) }.toIntArray()
+        // Track: photo colour, then natural shades (black to white), then the rainbow — drawn by sampling
+        // the slider evenly, so each colour sits where it will be picked.
+        val rainbow = IntArray(60) { k ->
+            val pos = (k + 0.5f) / 60f * hue.max
+            val h = hueFor(pos.toInt(), hue.max)
+            when {
+                h == null -> 0xFF6A6A6A.toInt()
+                h >= com.headscan.core.HairColor.NATURAL -> com.headscan.core.HairColor.naturalShade(h - com.headscan.core.HairColor.NATURAL)
+                else -> com.headscan.core.HairColor.hsv(h, 0.9f, 0.95f)
+            }
+        }
         hue.progressDrawable = android.graphics.drawable.GradientDrawable(
             android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT, rainbow,
         ).apply { cornerRadius = 4 * density; setSize(0, (8 * density).toInt()) }
@@ -806,9 +811,13 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         ).apply { cornerRadius = 4 * density; setSize(0, (8 * density).toInt()) }
         val listener = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                hairHue = if (hue.progress < HUE_NATURAL) null else (hue.progress - HUE_NATURAL) * 360f / (hue.max - HUE_NATURAL)
+                hairHue = hueFor(hue.progress, hue.max)
                 hairTone = (tone.progress - 50) / 50f
-                hueLabel.text = if (hairHue == null) "Natural" else "Colour"
+                hueLabel.text = when {
+                    hairHue == null -> "Photo"
+                    hairHue!! >= com.headscan.core.HairColor.NATURAL -> "Natural"
+                    else -> "Rainbow"
+                }
                 toneLabel.text = "Tone"
                 if (fromUser) refreshHairColor()
             }
@@ -820,7 +829,17 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         findViewById<View>(R.id.edit_reset).setOnLongClickListener {
             hue.progress = 0; tone.progress = 50; refreshHairColor(); true
         }
-        hueLabel.text = "Natural"
+        hueLabel.text = "Photo"
+    }
+
+    /** Colour slider position: photo colour, then natural shades, then rainbow hues (see [HairColor.target]). */
+    private fun hueFor(progress: Int, max: Int): Float? {
+        val f = progress.toFloat() / max
+        return when {
+            f < HUE_PHOTO_END -> null
+            f < HUE_NATURAL_END -> com.headscan.core.HairColor.NATURAL + (f - HUE_PHOTO_END) / (HUE_NATURAL_END - HUE_PHOTO_END)
+            else -> (f - HUE_NATURAL_END) / (1f - HUE_NATURAL_END) * 360f
+        }
     }
 
     /** Recolours the preview texture in the background; only the latest slider position is applied. */
@@ -851,6 +870,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun hairLabel(h: HairStyle) = when (h) {
+        HairStyle.NONE -> "No hair"
         HairStyle.CLASSIC_PART -> "Classic side part"
         HairStyle.CLASSIC_SLICK -> "Classic slicked back"
         HairStyle.CLASSIC_TOUSLED -> "Classic tousled"
@@ -1048,6 +1068,60 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         showStatus(previewText(result))
     }
 
+    /** Settings page (the ⋮ button): head style, plus a Debug section. Changes apply to the next scan. */
+    private fun showSettings() {
+        val d = resources.displayMetrics.density
+        fun px(v: Int) = (v * d).toInt()
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(px(22), px(8), px(22), px(8))
+        }
+        fun header(text: String) = TextView(this).apply {
+            this.text = text
+            textSize = 15f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, px(14), 0, px(4))
+        }
+        box.addView(header("Head style"))
+        val styles = RadioGroup(this)
+        val realistic = android.widget.RadioButton(this).apply { id = View.generateViewId(); text = "Realistic" }
+        val goldeneye = android.widget.RadioButton(this).apply { id = View.generateViewId(); text = "GoldenEye: Source" }
+        styles.addView(realistic); styles.addView(goldeneye)
+        styles.check(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) goldeneye.id else realistic.id)
+        box.addView(styles)
+
+        box.addView(header("Debug"))
+        val label = TextView(this)
+        fun setLabel(p: Int) {
+            label.text = "Percentage of face to capture using the front camera: $p%\n" +
+                (if (p == 0) "Only the eyes, nose and mouth." else if (p == 100) "As far around the face as the front camera sees." else "")
+        }
+        val bar = SeekBar(this).apply { max = 100; progress = faceCapturePercent }
+        setLabel(faceCapturePercent)
+        bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) = setLabel(progress)
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
+        box.addView(label); box.addView(bar)
+        box.addView(TextView(this).apply {
+            text = "Settings apply to the next scan."
+            textSize = 12f
+            alpha = 0.7f
+            setPadding(0, px(10), 0, 0)
+        })
+        AlertDialog.Builder(this)
+            .setTitle("Settings")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Done") { _, _ ->
+                headStyle = if (styles.checkedRadioButtonId == goldeneye.id) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
+                faceCapturePercent = bar.progress
+                prefs.edit().putString("style", headStyle.name).putInt("face_capture", faceCapturePercent).apply()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun previewText(result: ScanResult?): String {
         val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
         return "Preview · ${result?.triangleCount ?: 0} triangles · ${result?.textureSize ?: 0}px texture · $style\nDrag to spin. " +
@@ -1123,7 +1197,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val MIN_KEYFRAMES = 8
         /** How far the face can be moved on the head: ±2 cm sideways, ±3 cm up/down, ±2 cm in/out. */
         /** Hair colour slider positions below this mean "natural colour". */
-        private const val HUE_NATURAL = 20
+        private const val HUE_PHOTO_END = 0.03f
+        private const val HUE_NATURAL_END = 0.5f
         private const val START_RETRY_MS = 4000L
         private val FACE_MOVE = floatArrayOf(0.02f, 0.03f, 0.04f)
         /** New selfie heads start with the face 20 mm in. */
