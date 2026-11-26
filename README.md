@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.24**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.25**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -63,9 +63,13 @@ The rear camera is used (ARCore depth does not work on the selfie camera), so **
 while the person being scanned sits still.
 
 1. Sit the subject on a stool in good, even light. Hair tied back helps. Stay still for ~1 minute.
-2. Hold the phone 40–60 cm from the face, put the crosshair on the nose and tap **Start**.
-3. Walk slowly in a full circle around the head, keeping it centred. The ring fills in as angles are captured.
-4. Then raise the phone and look down at the top of the head from a few angles.
+2. Point the phone at the person's head from about half a metre away and tap **Start**. No aiming is needed: the
+   app finds the nearest head in view and waits for the depth sensor if it isn't ready yet.
+3. Walk slowly around the head. The phone buzzes for each captured view, a white dot shows where you are on the ring
+   and a yellow arrow points the way to the nearest gap. Anything from 20 cm to 1.3 m away works, and the head doesn't
+   have to stay exactly centred.
+4. Three-quarters of the ring is enough: the rest of the head is filled in from the sides you captured. Going all the
+   way round, and raising the phone over the top of the head, is optional and gives a better result.
 5. Finish standing in front of the face and tap **Finish**, then hold still for a second while a
    full-resolution photo is taken. Processing takes roughly 10–40 seconds. The files are saved to `Downloads/HeadScans/...`.
 

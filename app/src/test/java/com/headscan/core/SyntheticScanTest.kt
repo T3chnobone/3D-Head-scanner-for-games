@@ -123,12 +123,18 @@ class SyntheticScanTest {
     @Test
     fun rearHighQuality() = fullPipeline(3500)
 
-    fun fullPipeline(target: Int) {
+    /** Easier rear capture: only about three-quarters of the way round, no views from above. */
+    @Test
+    fun rearPartialCoverage() { fullPipeline(1500, maxAz = 270, elevations = floatArrayOf(-10f, 15f), name = "scan_rear_partial", maxMeanErr = 0.006f) }
+
+    fun fullPipeline(target: Int, maxAz: Int = 360, elevations: FloatArray = floatArrayOf(-10f, 15f, 45f), name: String? = null,
+                     maxMeanErr: Float = 0.004f) {
         val kfs = ArrayList<Keyframe>()
         var n = 0
-        for (elev in floatArrayOf(-10f, 15f, 45f)) {
+        for (elev in elevations) {
             val step = if (elev > 30f) 45 else 20
-            for (az in 0 until 360 step step) {
+            for (az0 in 0 until maxAz step step) {
+                val az = if (maxAz < 360 && az0 > maxAz / 2) az0 - maxAz else az0   // first view stays at the front
                 val a = Math.toRadians(az.toDouble()).toFloat()
                 val e = Math.toRadians(elev.toDouble()).toFloat()
                 val r = 0.5f
@@ -145,7 +151,7 @@ class SyntheticScanTest {
         }
         println("Pipeline took ${System.currentTimeMillis() - t0} ms: ${res.triangleCount} tris, ${res.vertexCount} verts")
 
-        val out = File("build/scan_rear_$target").apply { mkdirs() }
+        val out = File("build/" + (name ?: "scan_rear_$target")).apply { mkdirs() }
         File(out, "head.obj").writeText(res.objText())
         File(out, "head.mtl").writeText(res.mtlText())
         // Texture as a binary PPM (java.awt isn't available in Android unit tests).
@@ -205,7 +211,7 @@ class SyntheticScanTest {
         println("Outward-facing triangles: $outward / ${fs.size}")
         println("Mean texture colour error: %.1f / 255".format(colErr / colN))
         assertTrue(outward > fs.size * 0.95, "normals")
-        assertTrue(errSum / vs.size < 0.004, "surface error")
+        assertTrue(errSum / vs.size < maxMeanErr, "surface error")
         assertTrue(colErr / colN < 20, "texture error")
         assertTrue(minY > -0.29f && maxR < 0.16f, "crop")
     }

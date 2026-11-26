@@ -147,6 +147,9 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             progress("Fusing depth ${i + 1}/${keyframes.size}", 0.35f * i / keyframes.size)
             vol.integrate(kf)
         }
+        // Close the surface where the scan didn't reach (it only needs to go about three-quarters of the way round).
+        progress("Filling unseen areas", 0.35f)
+        vol.fillUnseen(cx, cz, s.minWeight)
 
         val front = keyframes.first()
         var fx = front.camX - cx; var fz = front.camZ - cz

@@ -205,7 +205,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         actionButton.setOnClickListener {
             when (state) {
-                State.AIM -> { startRequestedMs = SystemClock.uptimeMillis(); lastHint = ""; startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Measuring distance to the face…") }
+                State.AIM -> { startRequestedMs = SystemClock.uptimeMillis(); lastHint = ""; startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Looking for the head…") }
                 State.CAPTURING -> requestFinish()
                 State.PREVIEW -> askNameAndSave()
                 State.DONE -> resetScan()
@@ -386,7 +386,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 startRequested = false
                 tryStartCapture(frame, camera)
             } else {
-                hint("Point the camera at the face from 30–80 cm, put the crosshair on the nose, then tap Start.\n\nThe person being scanned must keep perfectly still.")
+                hint("Point the camera at the person's head from about half a metre away and tap Start – no need to aim.\n\nThe person being scanned must keep perfectly still.")
             }
             State.CAPTURING -> if (finishRequested.compareAndSet(true, false)) {
                 val before = keyframes.size
@@ -464,22 +464,37 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             // Depth can take a moment after tracking starts: keep trying for a few seconds before giving up.
             if (SystemClock.uptimeMillis() - startRequestedMs < START_RETRY_MS) {
                 startRequested = true
-                hint("Measuring distance to the face… move the phone very slightly side to side.")
+                hint("Waiting for the depth sensor… move the phone very slightly side to side.")
             } else {
-                hint("Depth not ready yet – move the phone slowly side to side and tap Start again.")
+                hint("The depth sensor isn't ready yet – move the phone slowly side to side and tap Start again.")
             }
             return
         }
-        val d = depthImage.use { ImageUtils.centerDepth(ImageUtils.depthToShorts(it), it.width, it.height) }
-        if (d < 0.2f || d > 1.2f) {
-            hint("Couldn't measure the face (got ${"%.2f".format(d)} m). Stay 30–80 cm away with the crosshair on the nose and tap Start again.")
+        // No aiming needed: the head is the nearest solid thing in the middle of the view.
+        val found = depthImage.use { img ->
+            val dw = img.width; val dh = img.height
+            ImageUtils.nearestHead(ImageUtils.depthToShorts(img), dw, dh)?.let { Pair(it, ImageUtils.toIntrinsics(camera.textureIntrinsics).scaledTo(dw, dh)) }
+        }
+        if (found == null) {
+            if (SystemClock.uptimeMillis() - startRequestedMs < START_RETRY_MS) {
+                startRequested = true
+                hint("Looking for the head… point the phone at the person from about half a metre away.")
+            } else {
+                hint("Couldn't find the head. Stand 30 cm – 1.2 m from the person with their head in view and tap Start again.")
+            }
             return
         }
+        val (uvd, di) = found
+        val d = uvd.third
         val pose = camera.pose
         val t = pose.translation
-        val z = pose.zAxis
-        val fwd = floatArrayOf(-z[0], -z[1], -z[2])
-        val hit = floatArrayOf(t[0] + fwd[0] * d, t[1] + fwd[1] * d, t[2] + fwd[2] * d)
+        // Ray through the found pixel (depth is measured along the camera's view axis).
+        val rx0 = (uvd.first - di.cx) / di.fx * d; val ry0 = -(uvd.second - di.cy) / di.fy * d
+        val hitCam = floatArrayOf(rx0, ry0, -d)
+        val hit = pose.transformPoint(hitCam)
+        val fwd0 = floatArrayOf(hit[0] - t[0], hit[1] - t[1], hit[2] - t[2])
+        val fl0 = sqrt(fwd0[0] * fwd0[0] + fwd0[1] * fwd0[1] + fwd0[2] * fwd0[2])
+        val fwd = floatArrayOf(fwd0[0] / fl0, fwd0[1] / fl0, fwd0[2] / fl0)
         // Push the centre ~10 cm into the head along the horizontal view direction.
         var hx = fwd[0]; var hz = fwd[2]
         val hl = sqrt(hx * hx + hz * hz).coerceAtLeast(1e-4f)
@@ -503,11 +518,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         // angle between camera forward (-Z) and the direction to the head centre
         val aim = Math.toDegrees(acos((-(z[0] * -dir[0] + z[1] * -dir[1] + z[2] * -dir[2])).coerceIn(-1f, 1f).toDouble()))
         when {
-            dist < MIN_DIST -> { hint(captureHint("Too close – step back a little.")); return }
-            dist > MAX_DIST -> { hint(captureHint("Too far – move closer.")); return }
-            aim > MAX_AIM_DEG -> { hint(captureHint("Keep the head in the middle of the screen.")); return }
+            dist < MIN_DIST -> { hint(captureHint("Too close – step back a little.")); showPosition(dir); return }
+            dist > MAX_DIST -> { hint(captureHint("Too far – move closer.")); showPosition(dir); return }
+            aim > MAX_AIM_DEG -> { hint(captureHint("Point the phone back at the head.")); showPosition(dir); return }
         }
         hint(captureHint(null))
+        showPosition(dir)
         val now = SystemClock.uptimeMillis()
         if (now - lastCaptureMs < MIN_INTERVAL_MS || keyframes.size >= MAX_KEYFRAMES) return
         var minAngle = 180.0
@@ -523,9 +539,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val sb = StringBuilder()
         sb.append("Captured ${keyframes.size} views · ${covered * 100 / COVERAGE_BINS}% of the way around\n")
         sb.append(problem ?: when {
-            covered < COVERAGE_BINS -> "Walk slowly around the head, keeping it centred. Fill the ring."
-            highViews < 4 -> "Great! Now raise the phone and look down at the top of the head."
-            else -> "Done? Stand in front of the face and tap Finish – a full-resolution photo is taken from there."
+            covered < FINISH_BINS -> "Walk slowly around the head, following the yellow arrow. You can finish at three-quarters of the ring."
+            covered < COVERAGE_BINS || highViews < 2 -> "That's enough to finish: stand in front of the face and tap Finish.\nOptional: carry on round, or raise the phone over the top of the head, for a better result."
+            else -> "All done! Stand in front of the face and tap Finish – a full-resolution photo is taken from there."
         })
         return sb.toString()
     }
@@ -567,13 +583,42 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             coverage[((az / 360.0) * COVERAGE_BINS).toInt().coerceIn(0, COVERAGE_BINS - 1)] = true
         }
         lastCaptureMs = SystemClock.uptimeMillis()
+        buzz()
         val snapshot = coverage.copyOf()
         val count = keyframes.size
         runOnUiThread {
-            coverageView.update(snapshot, crosshair = true)
+            coverageView.update(snapshot, crosshair = false)
             actionButton.isEnabled = count >= MIN_KEYFRAMES
         }
     }
+
+    /** A short buzz for each captured view. */
+    private fun buzz() {
+        val v = getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= 26) v.vibrate(android.os.VibrationEffect.createOneShot(18, 120))
+            else @Suppress("DEPRECATION") v.vibrate(18)
+        } catch (e: Throwable) { }
+    }
+
+    /** Moves the "you are here" dot on the ring and points the arrow towards the nearest gap. */
+    private fun showPosition(dir: FloatArray) {
+        var az = Math.toDegrees((atan2(dir[0], dir[2]) - frontAngle).toDouble())
+        az = ((az % 360) + 360) % 360
+        val bin = ((az / 360.0) * COVERAGE_BINS).toInt().coerceIn(0, COVERAGE_BINS - 1)
+        var way = 0
+        if (!coverage[bin] || coverage.count { it } < COVERAGE_BINS) {
+            for (step in 0 until COVERAGE_BINS) {
+                if (!coverage[(bin + step) % COVERAGE_BINS]) { way = if (step == 0) 0 else 1; break }
+                if (!coverage[(bin - step + COVERAGE_BINS) % COVERAGE_BINS]) { way = -1; break }
+            }
+        }
+        if (bin == shownBin && way == shownWay) return
+        shownBin = bin; shownWay = way
+        runOnUiThread { coverageView.setPosition(bin, way) }
+    }
+    private var shownBin = -2
+    private var shownWay = 0
 
     // ---------------------------------------------------------------- processing
 
@@ -1011,7 +1056,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         secondaryButton.visibility = View.GONE
         actionButton.text = "Start"
         actionButton.isEnabled = true
-        coverageView.update(BooleanArray(0), crosshair = true)
+        coverageView.update(BooleanArray(0), crosshair = false)
+        coverageView.setPosition(-1, 0); shownBin = -2
     }
 
     private fun enterCapturing() {
@@ -1021,7 +1067,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         secondaryButton.isEnabled = true
         secondaryButton.text = "Cancel"
         secondaryButton.visibility = View.VISIBLE
-        coverageView.update(if (selfieMode) selfie.coverage.copyOf() else coverage.copyOf(), crosshair = !selfieMode)
+        coverageView.update(if (selfieMode) selfie.coverage.copyOf() else coverage.copyOf(), crosshair = false)
     }
 
     private fun enterProcessing() {
@@ -1031,6 +1077,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         progressBar.visibility = View.VISIBLE
         progressBar.progress = 0
         coverageView.update(BooleanArray(0), crosshair = false)
+        coverageView.setPosition(-1, 0); shownBin = -2
         showStatus("Building 3D model…")
     }
 
@@ -1208,9 +1255,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val REQUEST_CAMERA = 1
         private const val COVERAGE_BINS = 24
         private const val HEAD_DEPTH = 0.10f       // nose tip to head centre, metres
-        private const val MIN_DIST = 0.25f
-        private const val MAX_DIST = 1.0f
-        private const val MAX_AIM_DEG = 25.0
+        private const val MIN_DIST = 0.2f
+        private const val MAX_DIST = 1.3f
+        private const val MAX_AIM_DEG = 45.0
+        /** Ring sections needed before the hint says it's OK to finish (three-quarters). */
+        private const val FINISH_BINS = 18
         private const val NEW_VIEW_DEG = 9.0
         private const val MIN_INTERVAL_MS = 250L
         private const val MAX_KEYFRAMES = 60
@@ -1219,7 +1268,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         /** Hair colour slider positions below this mean "natural colour". */
         private const val HUE_PHOTO_END = 0.03f
         private const val HUE_NATURAL_END = 0.5f
-        private const val START_RETRY_MS = 4000L
+        private const val START_RETRY_MS = 15000L
         /** New selfie heads start with the face 20 mm in. */
         private const val DEFAULT_FACE_Z = -0.02f
         private const val LOW_TRIANGLES = 1500

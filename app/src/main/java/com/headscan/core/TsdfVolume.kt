@@ -74,4 +74,60 @@ class TsdfVolume(
             }
         }
     }
+
+    /**
+     * Fills parts of the volume that no camera saw (e.g. the back of the head when the scan only went part of the
+     * way round) so the surface closes instead of leaving a hole. For every height and every direction around the
+     * vertical axis through ([cx], [cz]) the radius of the seen surface is measured; unseen directions take the
+     * radius interpolated from the seen directions on either side at that height. Unseen voxels then get the
+     * distance to that shape, with weight [minWeight] so the surface is extracted there.
+     */
+    fun fillUnseen(cx: Float, cz: Float, minWeight: Float, sectors: Int = 16) {
+        val samples = Array(ny * sectors) { ArrayList<Float>() }
+        val twoPi = (2 * Math.PI).toFloat()
+        fun sectorOf(dx: Float, dz: Float): Int {
+            var a = kotlin.math.atan2(dx, dz)
+            if (a < 0) a += twoPi
+            return ((a / twoPi) * sectors).toInt().coerceIn(0, sectors - 1)
+        }
+        for (k in 0 until nz) for (j in 0 until ny) for (i in 0 until nx) {
+            val id = index(i, j, k)
+            if (weight[id] < minWeight || kotlin.math.abs(tsdf[id]) > 0.3f) continue
+            val dx = pointX(i.toFloat()) - cx; val dz = pointZ(k.toFloat()) - cz
+            samples[j * sectors + sectorOf(dx, dz)].add(kotlin.math.sqrt(dx * dx + dz * dz))
+        }
+        val radius = FloatArray(ny * sectors) { Float.NaN }
+        for (j in 0 until ny) for (s in 0 until sectors) {
+            val l = samples[j * sectors + s]
+            if (l.size >= 1) { l.sort(); radius[j * sectors + s] = l[l.size / 2] }
+        }
+        // Unseen directions: interpolate round the circle between the nearest seen directions at that height.
+        val known = BooleanArray(sectors)
+        for (j in 0 until ny) {
+            var any = false
+            for (s in 0 until sectors) { known[s] = !radius[j * sectors + s].isNaN(); any = any || known[s] }
+            if (!any) continue
+            for (s in 0 until sectors) {
+                if (known[s]) continue
+                var a = 1; while (!known[(s - a + sectors) % sectors]) a++
+                var b = 1; while (!known[(s + b) % sectors]) b++
+                val ra = radius[j * sectors + (s - a + sectors) % sectors]; val rb = radius[j * sectors + (s + b) % sectors]
+                radius[j * sectors + s] = ra + (rb - ra) * a / (a + b).toFloat()
+            }
+        }
+        // Heights with nothing seen below the lowest seen one carry it on down (the neck continues).
+        var lowest = -1
+        for (j in 0 until ny) if (!radius[j * sectors].isNaN()) { lowest = j; break }
+        if (lowest < 0) return
+        for (j in 0 until lowest) for (s in 0 until sectors) radius[j * sectors + s] = radius[lowest * sectors + s]
+        for (k in 0 until nz) for (j in 0 until ny) for (i in 0 until nx) {
+            val id = index(i, j, k)
+            if (weight[id] >= minWeight) continue
+            val dx = pointX(i.toFloat()) - cx; val dz = pointZ(k.toFloat()) - cz
+            val r = radius[j * sectors + sectorOf(dx, dz)]
+            // Above the top of what was seen: outside, so an unseen crown is capped instead of left open.
+            tsdf[id] = if (r.isNaN()) 1f else ((kotlin.math.sqrt(dx * dx + dz * dz) - r) / truncation).coerceIn(-1f, 1f)
+            weight[id] = minWeight
+        }
+    }
 }
