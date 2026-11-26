@@ -228,14 +228,8 @@ class SelfieHead(
         val cranium = (sqrt(exT * exT + ey * ey + ez * ez) - 1f) * min(rx, min(ry, rz))
         val occ = ellipsoid(x - headCx, y - (headCy + 0.1f * ry), z - (headCz - 0.35f * rz), rx * 0.88f, ry * 0.72f, rz * 0.7f)
         var head = smin(cranium, occ, 0.01f)
-        // Jaw: just the back of the jawline, from under the cheek to the angle of the jaw below each ear, slim and
-        // tucked inside so it shapes the side of the face. (A full bar round to the chin stood out as a collar:
-        // the scanned face already has the chin.)
-        val gonY = earY - 0.055f * sc; val gonZ = earZ + 0.022f * sc; val gonX = 0.047f * sc * widthScale
-        val jfY = minY + 0.04f * sc; val jfZ = noseZ - 0.08f * sc; val jfX = 0.035f * sc * widthScale
-        val jawL = capsule(x, y, z, headCx - jfX, jfY, jfZ, headCx - gonX, gonY, gonZ, 0.009f * sc, 0.01f * sc)
-        val jawR = capsule(x, y, z, headCx + jfX, jfY, jfZ, headCx + gonX, gonY, gonZ, 0.009f * sc, 0.01f * sc)
-        head = sminPoly(head, min(jawL, jawR), 0.012f * sc)
+        // No separate jaw shape: the scanned face has the chin and jaw, and extra jaw shapes showed as bulges
+        // either side of the neck.
         // Cheekbones bridging the face to the sides of the head.
         val cbY = minY + 0.56f * (maxY - minY); val cbZ = noseZ - 0.065f * sc
         val cheek = min(
