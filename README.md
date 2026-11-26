@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.18**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.19**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -25,6 +25,20 @@ Everything runs on the phone. No server, no account.
   see Google's list at https://developers.google.com/ar/devices, look for "Supports Depth API").
 * Google Play Services for AR (the app prompts to install it).
 * Android 7.0+.
+
+## Texture and shape (0.19)
+
+* **Layout:** the texture is a game-style unwrap of a few large islands (with the face in one piece and given
+  about twice the resolution) instead of one cell per triangle, so it is continuous, sharper and has few seams.
+* **GoldenEye: Source style:** high-pass sharpening (fine unsharp mask plus a wider high-pass that brings out
+  pores and stubble), slight desaturation, and low-poly shading: big planes (forehead, cheeks, nose bridge, skull)
+  are flat-shaded while the eyes, lips and ears stay smooth (OBJ smoothing groups).
+* **Skin (Selfie mode):** uneven lighting on the photo face is evened out, a badly seen side of the face is
+  filled in from the mirror-image side, and the painted skin on the sides, back and neck gets real pore/stubble
+  detail cut from your cheek instead of a flat colour.
+* **Head shape (Selfie mode):** the generic head now has a rounded back of the skull, slightly narrower temples,
+  a jawline from the chin to below the ears, cheekbones, ears and a neck, all sized from your face.
+* Nearest / linear filtering and DXT (BC1) compression are chosen in the game engine when the PNG is imported.
 
 ## Settings
 
@@ -105,7 +119,8 @@ SurfaceNets     extract the zero surface
 MeshOps         crop to head + neck (cylinder below the chin, remove shoulder tops), keep largest piece,
                 Taubin smoothing to remove depth noise
 Decimator       quadric-error edge collapse down to 1500 triangles (boundary-preserving, no flips)
-UvAtlas         pack triangles in pairs into a grid on the 1024² texture
+ChartAtlas      game-style UV layout: split the head into large islands by facing direction (face, sides,
+                back, top, under the chin), flatten each, pack them with the face at ~2x texel density
 ImageRegistration  line the full-resolution Finish photo up with the last tracked frame
 TextureBaker    project every texel into each photo, depth-test for occlusion, take the best photo per texel
                 (view angle × resolution × sharpness), fill unseen texels and pad seams

@@ -7,33 +7,30 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Per-triangle UV atlas: triangles are packed in pairs into square cells of a grid,
- * each triangle taking one half of a cell. Low-poly friendly, uses ~all of the texture,
- * and gives every triangle the same texel budget.
+ * UV layout: 6 floats per face = pixel-space (x,y) of its 3 corners, image origin top-left.
+ * Without [uv], triangles are packed in pairs into a grid (every triangle gets the same texel budget);
+ * [ChartAtlas] builds a game-style layout of large continuous islands instead.
  */
-class UvAtlas(val faceCount: Int, val size: Int) {
-    /** 6 floats per face: pixel-space (x,y) of its 3 corners, image origin top-left. */
-    val pixelUv = FloatArray(faceCount * 6)
-    val grid: Int
-    val cell: Float
+class UvAtlas(val faceCount: Int, val size: Int, uv: FloatArray? = null) {
+    val pixelUv = uv ?: FloatArray(faceCount * 6)
 
     init {
-        val pairs = (faceCount + 1) / 2
-        grid = max(1, ceil(sqrt(pairs.toDouble())).toInt())
-        cell = size.toFloat() / grid
-        val m = 1.0f          // margin to the cell border (px)
-        val g = 1.5f          // half-gap across the diagonal (px)
-        for (f in 0 until faceCount) {
-            val pair = f / 2
-            val x0 = (pair % grid) * cell
-            val y0 = (pair / grid) * cell
-            val o = f * 6
-            if (f % 2 == 0) {
-                // upper-left half
-                set(o, x0 + m, y0 + m, x0 + cell - m - 2 * g, y0 + m, x0 + m, y0 + cell - m - 2 * g)
-            } else {
-                // lower-right half
-                set(o, x0 + cell - m, y0 + cell - m, x0 + m + 2 * g, y0 + cell - m, x0 + cell - m, y0 + m + 2 * g)
+        if (uv == null) {
+            val pairs = (faceCount + 1) / 2
+            val grid = max(1, ceil(sqrt(pairs.toDouble())).toInt())
+            val cell = size.toFloat() / grid
+            val m = 1.0f          // margin to the cell border (px)
+            val g = 1.5f          // half-gap across the diagonal (px)
+            for (f in 0 until faceCount) {
+                val pair = f / 2
+                val x0 = (pair % grid) * cell
+                val y0 = (pair / grid) * cell
+                val o = f * 6
+                if (f % 2 == 0) {
+                    set(o, x0 + m, y0 + m, x0 + cell - m - 2 * g, y0 + m, x0 + m, y0 + cell - m - 2 * g)
+                } else {
+                    set(o, x0 + cell - m, y0 + cell - m, x0 + m + 2 * g, y0 + cell - m, x0 + cell - m, y0 + m + 2 * g)
+                }
             }
         }
     }
@@ -110,6 +107,8 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
     private val accG = FloatArray(texelIndex.size)
     private val accB = FloatArray(texelIndex.size)
     private val accW = FloatArray(texelIndex.size)
+    /** Best view score (front-on x resolution x sharpness) each texel got, 0 if unseen. */
+    private val bestScore = FloatArray(texelIndex.size)
 
     val texelCount get() = texelIndex.size
 
@@ -162,6 +161,7 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
             // Image pixels per metre of surface here; beyond the texture's own density it no longer helps.
             val density = min(1f, focal * cos / z / TEXEL_DENSITY)
             val score = cos * sqrt(density) * viewScore
+            if (score > bestScore[t]) bestScore[t] = score
             val s2 = score * score
             val s4 = s2 * s2
             var wt = s4 * s4 * s4 * edgeW      // score^12
@@ -290,6 +290,131 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
             System.arraycopy(next, 0, has, 0, has.size)
         }
         return out
+    }
+
+    /**
+     * Mirrors the face across x = [mirrorX]: texels (matching [where]) that were only seen badly take the colour
+     * of their mirror-image point when that was seen at least twice as well. Fixes a weak side of the face.
+     * Works on the finished [texture] in place.
+     */
+    fun mirrorWeakSide(texture: IntArray, mirrorX: Float, where: (Float, Float, Float) -> Boolean) {
+        val cell = 0.002f
+        val grid = HashMap<Long, Int>()
+        fun key(x: Float, y: Float, z: Float): Long {
+            val i = kotlin.math.floor(x / cell).toLong(); val j = kotlin.math.floor(y / cell).toLong(); val k = kotlin.math.floor(z / cell).toLong()
+            return (i and 0x1FFFFF) or ((j and 0x1FFFFF) shl 21) or ((k and 0x1FFFFF) shl 42)
+        }
+        for (t in texelIndex.indices) {
+            if (bestScore[t] <= 0f) continue
+            val kk = key(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])
+            val prev = grid[kk]
+            if (prev == null || bestScore[t] > bestScore[prev]) grid[kk] = t
+        }
+        val src = texture.copyOf()
+        for (t in texelIndex.indices) {
+            val x = texelPos[3 * t]; val y = texelPos[3 * t + 1]; val z = texelPos[3 * t + 2]
+            if (!where(x, y, z)) continue
+            val mx = 2 * mirrorX - x
+            var best = -1; var bs = 0f
+            // search the mirror point's cell and its neighbours
+            for (dz in -1..1) for (dy in -1..1) for (dx in -1..1) {
+                val m = grid[key(mx + dx * cell, y + dy * cell, z + dz * cell)] ?: continue
+                if (bestScore[m] > bs) { bs = bestScore[m]; best = m }
+            }
+            if (best < 0 || bs < 2f * bestScore[t] || bs < 0.25f) continue
+            // blend in by how much better the mirror side is
+            val k = ((bs / max(bestScore[t], 1e-3f) - 2f) / 2f).coerceIn(0f, 1f)
+            val a = src[texelIndex[t]]; val b = src[texelIndex[best]]
+            fun ch(sh: Int) = (((a shr sh) and 255) * (1 - k) + ((b shr sh) and 255) * k).toInt().coerceIn(0, 255)
+            texture[texelIndex[t]] = (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+    }
+
+    /**
+     * Removes uneven lighting (a shadowed side, a bright spot) from the photo part of [texture]: each texel is
+     * divided by its blurred brightness relative to [targetLuma], over texels where [amount] (per texel map) > 0.
+     */
+    fun delight(texture: IntArray, amount: FloatArray, targetLuma: Float, strength: Float = 0.75f) {
+        val n = size * size
+        val lum = FloatArray(n); val w = FloatArray(n)
+        for (i in 0 until n) if (amount[i] > 0.05f) {
+            val c = texture[i]
+            lum[i] = (0.299f * ((c shr 16) and 255) + 0.587f * ((c shr 8) and 255) + 0.114f * (c and 255)) * amount[i]
+            w[i] = amount[i]
+        }
+        val r = max(4, size / 64)
+        val bl = blur(lum, r); val bw = blur(w, r)
+        for (i in 0 until n) {
+            if (amount[i] <= 0.05f || bw[i] < 0.2f) continue
+            val local = bl[i] / bw[i]
+            if (local < 1f) continue
+            val gain = Math.pow((targetLuma / local).toDouble(), strength.toDouble()).toFloat().coerceIn(0.7f, 1.6f)
+            val k = 1f + (gain - 1f) * amount[i]
+            val c = texture[i]
+            fun ch(sh: Int) = (((c shr sh) and 255) * k).toInt().coerceIn(0, 255)
+            texture[i] = (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+    }
+
+    private fun blur(src: FloatArray, r: Int): FloatArray {
+        val tmp = FloatArray(src.size); val out = FloatArray(src.size)
+        for (y in 0 until size) {
+            var sum = 0f
+            for (x in -r..r) sum += src[y * size + x.coerceIn(0, size - 1)]
+            for (x in 0 until size) {
+                tmp[y * size + x] = sum
+                sum += src[y * size + (x + r + 1).coerceAtMost(size - 1)] - src[y * size + (x - r).coerceAtLeast(0)]
+            }
+        }
+        for (x in 0 until size) {
+            var sum = 0f
+            for (y in -r..r) sum += tmp[y.coerceIn(0, size - 1) * size + x]
+            for (y in 0 until size) {
+                out[y * size + x] = sum / ((2 * r + 1) * (2 * r + 1))
+                sum += tmp[(y + r + 1).coerceAtMost(size - 1) * size + x] - tmp[(y - r).coerceAtLeast(0) * size + x]
+            }
+        }
+        return out
+    }
+
+    /**
+     * A small square of fine skin detail (high-pass luminance, around 0) cut from the photo where [where] holds,
+     * for painting real-looking skin onto parts the camera never saw. Null if no clean patch was found.
+     */
+    fun skinDetailPatch(texture: IntArray, where: (Float, Float, Float) -> Boolean, patch: Int = 40): FloatArray? {
+        val ok = BooleanArray(size * size)
+        for (t in texelIndex.indices) if (bestScore[t] > 0.3f && where(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])) ok[texelIndex[t]] = true
+        // find a fully-covered patch: scan candidates
+        var bx = -1; var by = -1
+        val step = 4
+        loop@ for (y in 0 until size - patch step step) for (x in 0 until size - patch step step) {
+            if (!ok[(y + patch / 2) * size + x + patch / 2]) continue
+            var full = true
+            for (yy in y until y + patch step 2) { for (xx in x until x + patch step 2) if (!ok[yy * size + xx]) { full = false; break }; if (!full) break }
+            if (full) { bx = x; by = y; break@loop }
+        }
+        if (bx < 0) return null
+        val l = FloatArray(patch * patch)
+        for (j in 0 until patch) for (i in 0 until patch) {
+            val c = texture[(by + j) * size + bx + i]
+            l[j * patch + i] = 0.299f * ((c shr 16) and 255) + 0.587f * ((c shr 8) and 255) + 0.114f * (c and 255)
+        }
+        // high-pass: minus a 7x7 local mean (wrapping, so the patch tiles)
+        val out = FloatArray(patch * patch)
+        for (j in 0 until patch) for (i in 0 until patch) {
+            var sum = 0f
+            for (dj in -3..3) for (di in -3..3) sum += l[((j + dj + patch) % patch) * patch + (i + di + patch) % patch]
+            out[j * patch + i] = (l[j * patch + i] - sum / 49f).coerceIn(-40f, 40f)
+        }
+        return out
+    }
+
+    /** Rewrites every surface texel of [texture]: [f](x, y, z, nx, ny, nz, argb) -> argb. */
+    fun mapTexels(texture: IntArray, f: (Float, Float, Float, Float, Float, Float, Int) -> Int) {
+        for (t in texelIndex.indices) {
+            val i = texelIndex[t]
+            texture[i] = f(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2], texelNrm[3 * t], texelNrm[3 * t + 1], texelNrm[3 * t + 2], texture[i])
+        }
     }
 
     companion object {

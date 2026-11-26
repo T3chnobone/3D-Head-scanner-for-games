@@ -53,6 +53,11 @@ class ScanResult(
     val hairMask: FloatArray? = null,
     /** The hair colour the texture was painted with (ARGB). */
     val hairBase: Int = 0,
+    /**
+     * Per face: smooth-shaded (true) or flat (false), for the low-poly game look where big planes are
+     * faceted but eyes and lips stay smooth. Null = all faces follow [flatShaded]. [normals] are per vertex then.
+     */
+    val smoothFaces: BooleanArray? = null,
 ) {
     val canRecolorHair get() = hairMask != null
 
@@ -60,14 +65,14 @@ class ScanResult(
     fun withHairColor(hue: Float?, tone: Float): ScanResult {
         val mask = hairMask ?: return this
         return ScanResult(mesh, normals, flatShaded, atlas, HairColor.recolor(texture, mask, hairBase, hue, tone),
-            textureSize, hairMask, hairBase)
+            textureSize, hairMask, hairBase, smoothFaces)
     }
 
     val triangleCount get() = mesh.faceCount
     val vertexCount get() = mesh.vertexCount
 
     fun objText(mtlFileName: String = "head.mtl"): String =
-        ObjWriter.obj(mesh, normals, atlas, mtlFileName, HeadScanPipeline.MATERIAL, flatShaded)
+        ObjWriter.obj(mesh, normals, atlas, mtlFileName, HeadScanPipeline.MATERIAL, flatShaded, smoothFaces)
 
     fun mtlText(textureFileName: String = "head_texture.png"): String = ObjWriter.mtl(HeadScanPipeline.MATERIAL, textureFileName)
 
@@ -83,19 +88,24 @@ class ScanResult(
         }
         val m = Mesh(p, mesh.faces)
         val n = if (flatShaded) MeshOps.faceNormals(m) else MeshOps.vertexNormals(m)
-        return ScanResult(m, n, flatShaded, atlas, texture, textureSize, hairMask, hairBase)
+        return ScanResult(m, n, flatShaded, atlas, texture, textureSize, hairMask, hairBase, smoothFaces)
     }
 
     /** Un-indexed triangle arrays for real-time preview: xyz, normal, texture st (t = 0 at the top row). */
     fun previewArrays(): Triple<FloatArray, FloatArray, FloatArray> {
         val n = mesh.faceCount * 3
         val pos = FloatArray(n * 3); val nrm = FloatArray(n * 3); val st = FloatArray(n * 2)
+        val fn = if (smoothFaces != null) MeshOps.faceNormals(mesh) else null
         for (f in 0 until mesh.faceCount) for (c in 0 until 3) {
             val v = mesh.faces[3 * f + c]
             val o = (3 * f + c)
             for (k in 0 until 3) {
                 pos[3 * o + k] = mesh.positions[3 * v + k]
-                nrm[3 * o + k] = if (flatShaded) normals[3 * f + k] else normals[3 * v + k]
+                nrm[3 * o + k] = when {
+                    fn != null -> if (smoothFaces!![f]) normals[3 * v + k] else fn[3 * f + k]
+                    flatShaded -> normals[3 * f + k]
+                    else -> normals[3 * v + k]
+                }
             }
             st[2 * o] = atlas.pixelUv[f * 6 + c * 2] / atlas.size
             st[2 * o + 1] = atlas.pixelUv[f * 6 + c * 2 + 1] / atlas.size
@@ -216,7 +226,10 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
 
         fun override(x: Float, y: Float, z: Float, seen: Int?): Int {
             val painted = color(x, y, z)
-            val fm = head.faceMask(x, y, z) * (1f - head.lockCover(x, y, z))
+            // Photo only where the shape really is the scanned face (the border band is blended geometry,
+            // where photos land slightly off and smear into streaks).
+            val m = ((head.faceMask(x, y, z) - 0.45f) / 0.55f).coerceIn(0f, 1f)
+            val fm = m * m * (3f - 2f * m) * (1f - head.lockCover(x, y, z))
             return if (fm > 0f && seen != null) mix(painted, seen, fm) else painted
         }
     }
@@ -265,7 +278,18 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
 
         // 4. UV atlas + texture bake
         progress("Baking texture", 0.55f)
-        val atlas = UvAtlas(mesh.faceCount, s.textureSize)
+        // Game-style layout: big islands, with the face given about twice the texel density of the rest.
+        val fNormals = MeshOps.faceNormals(mesh)
+        val ca = kotlin.math.cos(frontAngle); val sa = kotlin.math.sin(frontAngle)
+        val atlas = ChartAtlas.build(mesh, s.textureSize, frontAngle) { f ->
+            val nz = fNormals[3 * f] * sa + fNormals[3 * f + 2] * ca          // head-frame forward component
+            var imp = 1f + 0.5f * kotlin.math.max(0f, nz)
+            if (hairFill != null) {
+                val v0 = mesh.faces[3 * f]
+                if (hairFill.head.faceMask(mesh.positions[3 * v0], mesh.positions[3 * v0 + 1], mesh.positions[3 * v0 + 2]) > 0.3f) imp = 2f
+            }
+            imp
+        }
         val baker = TextureBaker(mesh, normals, atlas)
         val quality = TextureBaker.qualities(keyframes)
         keyframes.forEachIndexed { i, kf ->
@@ -277,11 +301,14 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             fillColor = { x, y, z -> hairFill.color(x, y, z) },
             overrideColor = { x, y, z, seen -> hairFill.override(x, y, z, seen) },
         ) else baker.finish()
+        if (hairFill != null) improveSkin(baker, texture, hairFill)
         if (s.style == HeadStyle.GOLDENEYE_SOURCE) {
             baker.bakeShading(texture, SourceStyle.vertexOcclusion(mesh, normals), SourceStyle::shade)
             SourceStyle.grade(texture, s.textureSize)
         }
         val flat = false
+        // Low-poly game look (GoldenEye: Source style): big planes flat-shaded, eyes, lips and ears smooth.
+        val smoothFaces = if (s.style == HeadStyle.GOLDENEYE_SOURCE) smoothMask(mesh, normals, hairFill?.head) else null
 
         // 5. Move into a head-centred frame, face toward +Z, and write OBJ.
         progress("Writing OBJ", 0.97f)
@@ -289,7 +316,66 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         val outNormals = if (flat) MeshOps.faceNormals(mesh) else MeshOps.vertexNormals(mesh)
         progress("Done", 1f)
         val hairMask = hairFill?.let { hf -> baker.texelMap { x, y, z -> hf.head.hairColorAmount(x, y, z) } }
-        return ScanResult(mesh, outNormals, flat, atlas, texture, s.textureSize, hairMask, hairFill?.hair ?: 0)
+        return ScanResult(mesh, outNormals, flat, atlas, texture, s.textureSize, hairMask, hairFill?.hair ?: 0, smoothFaces)
+    }
+
+    /**
+     * Selfie head skin: evens out the lighting on the photo face, mirrors the better-seen side of the face onto
+     * a badly seen side, and gives the painted skin (sides, back, neck) real pore/stubble detail cut from the
+     * photo instead of a flat colour.
+     */
+    private fun improveSkin(baker: TextureBaker, texture: IntArray, hf: HairFill) {
+        val head = hf.head
+        val faceAmt = baker.texelMap { x, y, z -> head.faceMask(x, y, z) }
+        val sk = hf.skin
+        val skinLuma = 0.299f * ((sk shr 16) and 255) + 0.587f * ((sk shr 8) and 255) + 0.114f * (sk and 255)
+        baker.delight(texture, faceAmt, skinLuma)
+        baker.mirrorWeakSide(texture, (head.minX + head.maxX) / 2) { x, y, z -> head.faceMask(x, y, z) > 0.5f }
+        val h = head.maxY - head.minY
+        val patchSize = 40
+        val patch = baker.skinDetailPatch(texture, { x, y, z ->
+            head.faceMask(x, y, z) > 0.95f && y > head.minY + 0.3f * h && y < head.minY + 0.5f * h &&
+                kotlin.math.abs(x - (head.minX + head.maxX) / 2) > 0.2f * (head.maxX - head.minX)
+        }, patchSize) ?: return
+        val tile = 0.03f     // metres covered by one repeat of the patch
+        fun sample(a: Float, b: Float): Float {
+            val u = ((a / tile) % 1f + 1f) % 1f * patchSize; val v = ((b / tile) % 1f + 1f) % 1f * patchSize
+            return patch[(v.toInt() % patchSize) * patchSize + (u.toInt() % patchSize)]
+        }
+        baker.mapTexels(texture) { x, y, z, nx, ny, nz, c ->
+            val k = (1f - head.faceMask(x, y, z)) * (1f - head.hairColorAmount(x, y, z))
+            if (k <= 0.02f) return@mapTexels c
+            // triplanar: blend the patch projected along the three axes by the normal
+            val wx = nx * nx; val wy = ny * ny; val wz = nz * nz
+            val d = (sample(y, z) * wx + sample(x, z) * wy + sample(x, y) * wz) / (wx + wy + wz) * 0.85f * k
+            fun ch(sh: Int) = (((c shr sh) and 255) + d).toInt().coerceIn(0, 255)
+            (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+    }
+
+    /**
+     * Which faces stay smooth in the low-poly look. With a selfie head the eyes, lips and ears are known;
+     * otherwise faces are kept smooth where the surface bends sharply (detail), and flat on big planes.
+     */
+    private fun smoothMask(mesh: Mesh, vertexNormals: FloatArray, head: SelfieHead?): BooleanArray {
+        val fn = MeshOps.faceNormals(mesh)
+        val p = mesh.positions
+        return BooleanArray(mesh.faceCount) { f ->
+            val a = mesh.faces[3 * f]; val b = mesh.faces[3 * f + 1]; val c = mesh.faces[3 * f + 2]
+            if (head != null) {
+                val x = (p[3 * a] + p[3 * b] + p[3 * c]) / 3; val y = (p[3 * a + 1] + p[3 * b + 1] + p[3 * c + 1]) / 3
+                val z = (p[3 * a + 2] + p[3 * b + 2] + p[3 * c + 2]) / 3
+                head.isDetailArea(x, y, z)
+            } else {
+                // Bend: how far the corner normals turn away from the face normal.
+                var minDot = 1f
+                for (v in intArrayOf(a, b, c)) {
+                    val d = vertexNormals[3 * v] * fn[3 * f] + vertexNormals[3 * v + 1] * fn[3 * f + 1] + vertexNormals[3 * v + 2] * fn[3 * f + 2]
+                    minDot = kotlin.math.min(minDot, d)
+                }
+                minDot < 0.9f      // > ~25 degrees
+            }
+        }
     }
 
     companion object {

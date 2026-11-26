@@ -5,7 +5,12 @@ import java.util.Locale
 /** Writes Wavefront OBJ + MTL text for a textured mesh with a per-face UV atlas. */
 object ObjWriter {
     /** [normals] are per vertex, or per face when [flat] (flat shading, no smoothing groups). */
-    fun obj(mesh: Mesh, normals: FloatArray, atlas: UvAtlas, mtlFileName: String, materialName: String, flat: Boolean = false): String {
+    /**
+     * [smooth] (optional, per face): smooth faces use the vertex [normals] in smoothing group 1, the rest are
+     * flat-shaded with their face normal (`s off`).
+     */
+    fun obj(mesh: Mesh, normals: FloatArray, atlas: UvAtlas, mtlFileName: String, materialName: String, flat: Boolean = false,
+            smooth: BooleanArray? = null): String {
         val sb = StringBuilder(mesh.vertexCount * 40 + mesh.faceCount * 120)
         sb.append("# Head scan - ").append(mesh.faceCount).append(" triangles, ")
             .append(mesh.vertexCount).append(" vertices\n")
@@ -23,17 +28,33 @@ object ObjWriter {
         for (v in 0 until nCount) {
             sb.append(String.format(Locale.US, "vn %.4f %.4f %.4f\n", normals[3 * v], normals[3 * v + 1], normals[3 * v + 2]))
         }
+        val fn = if (smooth != null) MeshOps.faceNormals(mesh) else null
+        if (fn != null) for (f in 0 until mesh.faceCount) {
+            sb.append(String.format(Locale.US, "vn %.4f %.4f %.4f\n", fn[3 * f], fn[3 * f + 1], fn[3 * f + 2]))
+        }
         sb.append("usemtl ").append(materialName).append('\n')
-        sb.append(if (flat) "s off\n" else "s 1\n")
-        for (f in 0 until mesh.faceCount) {
+        fun face(f: Int, faceNormal: Boolean) {
             sb.append('f')
             for (c in 0 until 3) {
                 val v = mesh.faces[3 * f + c] + 1
                 val t = 3 * f + c + 1
-                val n = if (flat) f + 1 else v
+                val n = when {
+                    fn != null -> if (faceNormal) nCount + f + 1 else v
+                    flat -> f + 1
+                    else -> v
+                }
                 sb.append(' ').append(v).append('/').append(t).append('/').append(n)
             }
             sb.append('\n')
+        }
+        if (smooth != null) {
+            sb.append("s 1\n")
+            for (f in 0 until mesh.faceCount) if (smooth[f]) face(f, false)
+            sb.append("s off\n")
+            for (f in 0 until mesh.faceCount) if (!smooth[f]) face(f, true)
+        } else {
+            sb.append(if (flat) "s off\n" else "s 1\n")
+            for (f in 0 until mesh.faceCount) face(f, flat)
         }
         return sb.toString()
     }

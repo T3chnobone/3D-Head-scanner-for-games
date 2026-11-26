@@ -149,6 +149,48 @@ class SelfieHead(
             d[k] = v
         }
         for (k in d.indices) blend[k] = min(1f, d[k] / borderCells)
+        // Soften the weight so the jagged (row-by-row) border of the face mesh can't print ridges onto the cheeks.
+        repeat(3) {
+            val src = blend.copyOf()
+            for (j in 0 until gh) for (i in 0 until gw) {
+                val k = j * gw + i
+                if (zFace[k].isNaN()) continue
+                var sum = 0f; var n = 0
+                for (dj in -2..2) for (di in -2..2) {
+                    val ii = i + di; val jj = j + dj
+                    if (ii < 0 || jj < 0 || ii >= gw || jj >= gh) { n++; continue }
+                    sum += src[jj * gw + ii]; n++
+                }
+                blend[k] = min(src[k], sum / n)
+            }
+        }
+    }
+
+    private val sampleBuf = object : ThreadLocal<FloatArray>() { override fun initialValue() = FloatArray(2) }
+
+    /**
+     * Face height and blend weight at (x, y), bilinearly interpolated between grid cells so the face surface
+     * has no terraces on steep parts (cheeks, jaw). Null outside the face.
+     */
+    private fun faceSample(x: Float, y: Float): FloatArray? {
+        val fi = gx(x) - 0.5f; val fj = gy(y) - 0.5f
+        val i0 = kotlin.math.floor(fi).toInt(); val j0 = kotlin.math.floor(fj).toInt()
+        val tx = fi - i0; val ty = fj - j0
+        var zs = 0f; var ws = 0f; var wt = 0f
+        for (dj in 0..1) for (di in 0..1) {
+            val i = i0 + di; val j = j0 + dj
+            if (i < 0 || j < 0 || i >= gw || j >= gh) continue
+            val k = j * gw + i
+            val z = zFace[k]
+            if (z.isNaN()) continue
+            val bw = (if (di == 0) 1 - tx else tx) * (if (dj == 0) 1 - ty else ty)
+            zs += z * bw; ws += blend[k] * bw; wt += bw
+        }
+        if (wt < 0.25f) return null
+        val out = sampleBuf.get()!!
+        out[0] = zs / wt
+        out[1] = ws * min(1f, wt) / wt * smoothstep(0.25f, 1f, wt)    // fade out where cells are missing
+        return out
     }
 
     private fun gx(x: Float) = (x - minX) / cell + 1f
@@ -161,11 +203,42 @@ class SelfieHead(
 
     /** Approximate signed distance of the generic head + neck (negative inside). */
     fun genericSdf(x: Float, y: Float, z: Float): Float {
+        val sc = earScale
+        // Cranium: main ellipsoid plus a rounded back of the skull (occiput), a little narrower at the temples.
         val ex = (x - headCx) / rx; val ey = (y - headCy) / ry; val ez = (z - headCz) / rz
-        val head = (sqrt(ex * ex + ey * ey + ez * ez) - 1f) * min(rx, min(ry, rz))
-        val nr = sqrt((x - headCx) * (x - headCx) + (z - neckCz) * (z - neckCz)) - neckR
+        val temple = 1f - 0.06f * smoothstep(0.0f, 0.7f, ez) * smoothstep(-0.2f, 0.4f, ey)
+        val exT = ex / temple
+        val cranium = (sqrt(exT * exT + ey * ey + ez * ez) - 1f) * min(rx, min(ry, rz))
+        val occ = ellipsoid(x - headCx, y - (headCy + 0.1f * ry), z - (headCz - 0.35f * rz), rx * 0.88f, ry * 0.72f, rz * 0.7f)
+        var head = smin(cranium, occ, 0.01f)
+        // Jaw: from the chin back to the angle of the jaw below each ear.
+        val chinX = (minX + maxX) / 2; val chinY = minY + 0.03f * sc; val chinZ = noseZ - 0.07f * sc
+        val gonY = earY - 0.06f * sc; val gonZ = earZ + 0.024f * sc; val gonX = 0.05f * sc
+        val jawL = capsule(x, y, z, chinX, chinY, chinZ, headCx - gonX, gonY, gonZ, 0.014f * sc, 0.012f * sc)
+        val jawR = capsule(x, y, z, chinX, chinY, chinZ, headCx + gonX, gonY, gonZ, 0.014f * sc, 0.012f * sc)
+        head = smin(head, min(jawL, jawR), 0.01f * sc)
+        // Cheekbones bridging the face to the sides of the head.
+        val cbY = minY + 0.56f * (maxY - minY); val cbZ = noseZ - 0.065f * sc
+        val cheek = min(
+            ellipsoid(x - (headCx - 0.048f * sc), y - cbY, z - cbZ, 0.012f * sc, 0.01f * sc, 0.018f * sc),
+            ellipsoid(x - (headCx + 0.048f * sc), y - cbY, z - cbZ, 0.012f * sc, 0.01f * sc, 0.018f * sc),
+        )
+        head = smin(head, cheek, 0.008f * sc)
+        // Neck: slightly wider side to side and a touch wider at the base; flat cut at the bottom.
+        val t = ((headCy - y) / (headCy - neckBottom)).coerceIn(0f, 1f)
+        val nx = (x - headCx) / 1.06f
+        val nr = sqrt(nx * nx + (z - neckCz) * (z - neckCz)) - neckR * (1f + 0.05f * t)
         val neck = max(nr, max(y - headCy, neckBottom - 0.02f - y))
         return smin(head, neck, 0.012f)
+    }
+
+    /** Capsule from a to b with radius going from ra to rb. */
+    private fun capsule(x: Float, y: Float, z: Float, ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float, ra: Float, rb: Float): Float {
+        val ux = bx - ax; val uy = by - ay; val uz = bz - az
+        val vx = x - ax; val vy = y - ay; val vz = z - az
+        val t = ((vx * ux + vy * uy + vz * uz) / (ux * ux + uy * uy + uz * uz)).coerceIn(0f, 1f)
+        val dx = vx - t * ux; val dy = vy - t * uy; val dz = vz - t * uz
+        return sqrt(dx * dx + dy * dy + dz * dz) - (ra + (rb - ra) * t)
     }
 
     private fun smoothstep(e0: Float, e1: Float, x: Float): Float {
@@ -177,13 +250,9 @@ class SelfieHead(
 
     /** 0 outside the real face, rising smoothly to 1 a little inside its border. */
     fun faceMask(x: Float, y: Float, z: Float): Float {
-        val fi = gx(x); val fj = gy(y)
-        val i = fi.toInt(); val j = fj.toInt()
-        if (fi < 0 || fj < 0 || i >= gw || j >= gh) return 0f
-        val k = j * gw + i
-        val zf = zFace[k]
-        if (zf.isNaN() || z < zf - 0.03f) return 0f
-        return smoothstep(0f, 1f, blend[k])
+        val fs = faceSample(x, y) ?: return 0f
+        if (z < fs[0] - 0.03f) return 0f
+        return smoothstep(0f, 1f, fs[1])
     }
 
     /** Height of the hairline around the head: forehead in front, sideburns at the sides, nape at the back. */
@@ -358,6 +427,18 @@ class SelfieHead(
         return 1f - smoothstep(0.024f * earScale, 0.036f * earScale, d)
     }
 
+    /** Eyes, lips and ears: kept smooth-shaded in the low-poly game look. */
+    fun isDetailArea(x: Float, y: Float, z: Float): Boolean {
+        if (earSdf(x, y, z) < 0.004f) return true
+        if (z < noseZ - 0.06f) return false
+        val h = maxY - minY
+        val cx = (minX + maxX) / 2
+        val ex = (abs(x - cx) - 0.23f * faceW) / (0.17f * faceW); val ey = (y - (minY + 0.6f * h)) / (0.1f * h)
+        if (ex * ex + ey * ey < 1f) return true
+        val lx = (x - cx) / (0.22f * faceW); val ly = (y - (minY + 0.21f * h)) / (0.09f * h)
+        return lx * lx + ly * ly < 1f
+    }
+
     /** Head + neck + hair, before the face is merged in. */
     private fun headWithHair(x: Float, y: Float, z: Float): Float {
         var g = genericSdf(x, y, z) - hairThickness(x, y, z)
@@ -378,13 +459,8 @@ class SelfieHead(
 
     private fun headAndFace(x: Float, y: Float, z: Float): Float {
         val g = headWithHair(x, y, z)
-        val fi = gx(x); val fj = gy(y)
-        val i = fi.toInt(); val j = fj.toInt()
-        if (fi < 0 || fj < 0 || i >= gw || j >= gh) return g
-        val k = j * gw + i
-        val zf = zFace[k]
-        if (zf.isNaN()) return g
-        val w = blend[k]
+        val fs = faceSample(x, y) ?: return g
+        val zf = fs[0]; val w = fs[1]
         val fz = (z - zf) * 0.85f
         // The face may only add material close to the generic head, so steep mesh borders can't form flaps.
         // Near the border the allowance shrinks to a few mm, so nothing sticks out at the sides of the face.
