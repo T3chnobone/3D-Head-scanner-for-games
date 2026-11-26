@@ -686,9 +686,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         progressBar.progress = 0
         lifecycleScope.launch(Dispatchers.Default) {
             try {
-                val result = HeadScanPipeline(settings).runSelfie(input.first, input.second, input.third, photoSource()) { msg, p ->
+                val result = HeadScanPipeline(settings).runSelfie(input.first, input.second, input.third, photoSource(), progress = { msg, p ->
                     runOnUiThread { showStatus("Rebuilding head…\n$msg"); progressBar.progress = (p * 100).toInt() }
-                }
+                })
                 withContext(Dispatchers.Main) {
                     lastSettings = settings
                     secondaryButton.isEnabled = true
