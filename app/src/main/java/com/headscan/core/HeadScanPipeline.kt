@@ -1,6 +1,7 @@
 package com.headscan.core
 
 import kotlin.math.atan2
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /** Tunables for the reconstruction. Defaults produce a 1500-triangle mesh with a 1024x1024 texture. */
@@ -350,7 +351,11 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
      */
     private fun improveSkin(baker: TextureBaker, texture: IntArray, hf: HairFill) {
         val head = hf.head
-        val faceAmt = baker.texelMap { x, y, z -> head.faceMask(x, y, z) }
+        // Face plus the skin on the sides of the head next to it: all of it gets de-lit.
+        val faceAmt = baker.texelMap { x, y, z ->
+            max(head.faceMask(x, y, z), if (head.distanceOutsideFace(x, y) < 0.06f && head.hairColorAmount(x, y, z) < 0.1f &&
+                z > head.headCz - 0.3f * head.rz && y > head.minY) 1f - smoothstep(0.04f, 0.06f, head.distanceOutsideFace(x, y)) else 0f)
+        }
         val sk = hf.skin
         val skinLuma = 0.299f * ((sk shr 16) and 255) + 0.587f * ((sk shr 8) and 255) + 0.114f * (sk and 255)
         // Take the lighting out of the photo: plain skin only for the fit (not eyes, brows, lips or hair).
@@ -358,6 +363,9 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             !head.isDetailArea(x, y, z) && head.hairColorAmount(x, y, z) < 0.05f && y < head.maxY - 0.02f
         }
         baker.mirrorWeakSide(texture, (head.minX + head.maxX) / 2) { x, y, z -> head.faceMask(x, y, z) > 0.5f }
+        // Carry the real skin colour at the edge of the face out onto the sides of the head (cheeks, temples,
+        // towards the ears) so there's no colour change at the face edge.
+        extendFaceColour(baker, texture, head)
         val h = head.maxY - head.minY
         val patchSize = 40
         val patch = baker.skinDetailPatch(texture, { x, y, z ->
@@ -377,6 +385,57 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             val d = (sample(y, z) * wx + sample(x, z) * wy + sample(x, y) * wz) / (wx + wy + wz) * 0.85f * k
             fun ch(sh: Int) = (((c shr sh) and 255) + d).toInt().coerceIn(0, 255)
             (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+    }
+
+    private fun extendFaceColour(baker: TextureBaker, texture: IntArray, head: SelfieHead) {
+        val step = 0.003f; val margin = 0.07f
+        val x0 = head.minX - margin; val y0 = head.minY - margin
+        val w = ((head.maxX - head.minX + 2 * margin) / step).toInt() + 1
+        val h = ((head.maxY - head.minY + 2 * margin) / step).toInt() + 1
+        val r = FloatArray(w * h); val g = FloatArray(w * h); val b = FloatArray(w * h); val n = FloatArray(w * h)
+        // Photo colour just inside the face edge, by position across the face.
+        baker.mapTexels(texture) { x, y, z, _, _, _, c ->
+            val m = head.faceMask(x, y, z)
+            if (m in 0.55f..0.97f && head.hairColorAmount(x, y, z) < 0.05f && !head.isDetailArea(x, y, z)) {
+                val i = ((x - x0) / step).toInt(); val j = ((y - y0) / step).toInt()
+                if (i in 0 until w && j in 0 until h) {
+                    val k = j * w + i
+                    r[k] += ((c shr 16) and 255).toFloat(); g[k] += ((c shr 8) and 255).toFloat(); b[k] += (c and 255).toFloat(); n[k]++
+                }
+            }
+            c
+        }
+        val near = IntArray(w * h) { if (n[it] > 0f) it else -1 }
+        if (near.none { it >= 0 }) return
+        fun d2(a: Int, c: Int): Int { val dx = a % w - c % w; val dy = a / w - c / w; return dx * dx + dy * dy }
+        fun relax(k: Int, o: Int) { val c = near[o]; if (c >= 0 && (near[k] < 0 || d2(k, c) < d2(k, near[k]))) near[k] = c }
+        for (j in 0 until h) for (i in 0 until w) { val k = j * w + i; if (i > 0) relax(k, k - 1); if (j > 0) relax(k, k - w); if (i > 0 && j > 0) relax(k, k - w - 1); if (i < w - 1 && j > 0) relax(k, k - w + 1) }
+        for (j in h - 1 downTo 0) for (i in w - 1 downTo 0) { val k = j * w + i; if (i < w - 1) relax(k, k + 1); if (j < h - 1) relax(k, k + w); if (i < w - 1 && j < h - 1) relax(k, k + w + 1); if (i > 0 && j < h - 1) relax(k, k + w - 1) }
+        val cr = FloatArray(w * h); val cg = FloatArray(w * h); val cb = FloatArray(w * h)
+        for (k in 0 until w * h) { val c = near[k]; if (c >= 0) { cr[k] = r[c] / n[c]; cg[k] = g[c] / n[c]; cb[k] = b[c] / n[c] } }
+        // Smooth along the edge so single noisy texels don't streak outward.
+        repeat(4) {
+            for (arr in arrayOf(cr, cg, cb)) {
+                val src = arr.copyOf()
+                for (j in 1 until h - 1) for (i in 1 until w - 1) {
+                    var sum = 0f
+                    for (dj in -1..1) for (di in -1..1) sum += src[(j + dj) * w + i + di]
+                    arr[j * w + i] = sum / 9f
+                }
+            }
+        }
+        baker.mapTexels(texture) { x, y, z, _, _, _, c ->
+            val out = head.distanceOutsideFace(x, y)
+            if (out <= 0f && head.faceMask(x, y, z) > 0.6f) return@mapTexels c
+            if (out > 0.06f || z < head.headCz - 0.4f * head.rz || y < head.minY - 0.03f) return@mapTexels c
+            val k0 = 1f - head.hairColorAmount(x, y, z)
+            val wgt = (1f - smoothstep(0.015f, 0.06f, out)) * k0 * (1f - head.faceMask(x, y, z))
+            if (wgt <= 0.01f) return@mapTexels c
+            val i = ((x - x0) / step).toInt().coerceIn(0, w - 1); val j = ((y - y0) / step).toInt().coerceIn(0, h - 1)
+            val k = j * w + i
+            fun ch(v: Int, t: Float) = (v + (t - v) * wgt).toInt().coerceIn(0, 255)
+            (0xFF shl 24) or (ch((c shr 16) and 255, cr[k]) shl 16) or (ch((c shr 8) and 255, cg[k]) shl 8) or ch(c and 255, cb[k])
         }
     }
 
@@ -408,4 +467,9 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
     companion object {
         const val MATERIAL = "head_material"
     }
+}
+
+private fun smoothstep(e0: Float, e1: Float, x: Float): Float {
+    val t = ((x - e0) / (e1 - e0)).coerceIn(0f, 1f)
+    return t * t * (3f - 2f * t)
 }

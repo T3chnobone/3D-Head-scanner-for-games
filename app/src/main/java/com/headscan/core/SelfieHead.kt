@@ -44,6 +44,8 @@ class SelfieHead(
     val chinY get() = minY
 
     private companion object {
+        /** Distance outside the face over which the head is bent to meet the face edge. */
+        const val FIT_FADE = 0.03f
         /** Part position for the classic side part, as a fraction of the head half-width (+X side). */
         const val PART_X = 0.35f
     }
@@ -98,9 +100,11 @@ class SelfieHead(
             rz = rz0
         } else {
             // The bottom of the skull stays at the jaw; top, width, front and back come from the measurement.
-            headCy = (shape.top + jawLine - oy) / 2
-            ry = (shape.top - (jawLine - oy)) / 2
-            rx = shape.rx
+            val top = shape.top.coerceIn(maxY + 0.025f * scale, maxY + 0.075f * scale)
+            headCy = (top + jawLine - oy) / 2
+            ry = (top - (jawLine - oy)) / 2
+            // Keep the head in proportion to the face: thick hair in the outline can't make it too big.
+            rx = shape.rx.coerceIn(faceW / 2 * 0.98f, faceW / 2 + 0.02f * scale)
             rz = (shape.zFront - shape.zBack) / 2
         }
         // Front of the skull just behind the upper forehead (the measured depth front-to-back is kept).
@@ -112,7 +116,7 @@ class SelfieHead(
         neckBottom = minY - 0.10f * scale - oy
 
         blend = FloatArray(gw * gh)
-        computeBlend(borderCells = (0.012f / cell).toInt())
+        computeBlend(borderCells = (0.02f / cell).toInt())
     }
 
     /**
@@ -474,8 +478,10 @@ class SelfieHead(
     }
 
     /** Head + neck + hair, before the face is merged in. */
-    private fun headWithHair(x: Float, y: Float, z: Float): Float {
-        var g = genericSdf(x, y, z) - hairThickness(x, y, z)
+    private fun headWithHair(x: Float, y: Float, z: Float, shift: Float = 0f): Float {
+        // [shift]: the skull (and hair on it) is bent along Z to meet the face edge; the ears stay put.
+        val zs = z - shift
+        var g = genericSdf(x, y, zs) - hairThickness(x, y, zs)
         // Curtains cover the ears, so they're left off (they would poke through the hair).
         if (hairStyle != HairStyle.CURTAINS) g = smin(g, earSdf(x, y, z), 0.003f)
         val extra = extraHairSdf(x, y, z)
@@ -492,8 +498,109 @@ class SelfieHead(
         return smin(base, locksSdf(x, y, z), 0.0025f)
     }
 
+    // ------------------------------------------------------------------ fitting the head to the face edge
+
+    /**
+     * The generic head is bent forward or back (along Z) so its surface meets the edge of the scanned face all
+     * the way round (forehead, temples, cheeks, jaw), fading out over [FIT_FADE] outside the face. Without this
+     * the face could sit in front of the head like a mask, or behind it.
+     */
+    private class EdgeFit(val x0: Float, val y0: Float, val step: Float, val w: Int, val h: Int, val shift: FloatArray, val outside: FloatArray)
+
+    private val edgeFit: EdgeFit by lazy { buildEdgeFit() }
+
+    private fun buildEdgeFit(): EdgeFit {
+        val step = 0.002f; val margin = 0.05f
+        val x0 = minX - margin; val y0 = minY - margin
+        val w = ceil((maxX - minX + 2 * margin) / step).toInt() + 1
+        val h = ceil((maxY - minY + 2 * margin) / step).toInt() + 1
+        val inside = BooleanArray(w * h)
+        val zf = FloatArray(w * h)
+        for (j in 0 until h) for (i in 0 until w) {
+            val fs = faceSample(x0 + i * step, y0 + j * step) ?: continue
+            inside[j * w + i] = true; zf[j * w + i] = fs[0]
+        }
+        // Mismatch at each border cell: face depth minus the generic skull's front surface there.
+        val delta = FloatArray(w * h) { Float.NaN }
+        for (j in 0 until h) for (i in 0 until w) {
+            val k = j * w + i
+            if (!inside[k]) continue
+            val border = (i == 0 || j == 0 || i == w - 1 || j == h - 1) ||
+                !inside[k - 1] || !inside[k + 1] || !inside[k - w] || !inside[k + w]
+            if (!border) continue
+            val x = x0 + i * step; val y = y0 + j * step
+            var z = zf[k] + 0.06f
+            var zg = Float.NaN
+            while (z > zf[k] - 0.1f) {
+                if (genericSdf(x, y, z) < 0f) { zg = z; break }
+                z -= 0.001f
+            }
+            if (zg.isNaN()) continue
+            // Only where the skull faces forward there (forehead, cheeks, chin): at the sides of the face moving the
+            // head along Z would shear it into fins.
+            val e = 0.002f
+            val gxv = genericSdf(x + e, y, zg) - genericSdf(x - e, y, zg)
+            val gyv = genericSdf(x, y + e, zg) - genericSdf(x, y - e, zg)
+            val gzv = genericSdf(x, y, zg + e) - genericSdf(x, y, zg - e)
+            val nz = gzv / sqrt(gxv * gxv + gyv * gyv + gzv * gzv).coerceAtLeast(1e-6f)
+            delta[k] = (zf[k] - zg).coerceIn(-0.015f, 0.015f) * smoothstep(0.45f, 0.8f, nz)
+        }
+        // Nearest border cell for every cell (two-pass chamfer), and the distance outside the face.
+        val near = IntArray(w * h) { if (!delta[it].isNaN()) it else -1 }
+        fun d2(a: Int, b: Int): Float { val dx = (a % w - b % w).toFloat(); val dy = (a / w - b / w).toFloat(); return dx * dx + dy * dy }
+        fun relax(k: Int, n: Int) {
+            val c = near[n]; if (c < 0) return
+            if (near[k] < 0 || d2(k, c) < d2(k, near[k])) near[k] = c
+        }
+        for (j in 0 until h) for (i in 0 until w) {
+            val k = j * w + i
+            if (i > 0) relax(k, k - 1); if (j > 0) relax(k, k - w)
+            if (i > 0 && j > 0) relax(k, k - w - 1); if (i < w - 1 && j > 0) relax(k, k - w + 1)
+        }
+        for (j in h - 1 downTo 0) for (i in w - 1 downTo 0) {
+            val k = j * w + i
+            if (i < w - 1) relax(k, k + 1); if (j < h - 1) relax(k, k + w)
+            if (i < w - 1 && j < h - 1) relax(k, k + w + 1); if (i > 0 && j < h - 1) relax(k, k + w - 1)
+        }
+        val shift = FloatArray(w * h); val outside = FloatArray(w * h)
+        for (k in 0 until w * h) {
+            val c = near[k]
+            if (c < 0) { outside[k] = margin; continue }
+            val dist = sqrt(d2(k, c)) * step
+            outside[k] = if (inside[k]) 0f else dist
+            val fade = if (inside[k]) 1f else 1f - smoothstep(0f, FIT_FADE, dist)
+            shift[k] = delta[c] * fade
+        }
+        // Smooth, so the bend has no kinks from the jagged face outline.
+        repeat(3) {
+            val src = shift.copyOf()
+            for (j in 1 until h - 1) for (i in 1 until w - 1) {
+                var sum = 0f
+                for (dj in -1..1) for (di in -1..1) sum += src[(j + dj) * w + i + di]
+                shift[j * w + i] = sum / 9f
+            }
+        }
+        return EdgeFit(x0, y0, step, w, h, shift, outside)
+    }
+
+    private fun sampleGrid(e: EdgeFit, a: FloatArray, x: Float, y: Float, outsideValue: Float): Float {
+        val fi = (x - e.x0) / e.step; val fj = (y - e.y0) / e.step
+        if (fi < 0f || fj < 0f || fi > e.w - 1.001f || fj > e.h - 1.001f) return outsideValue
+        val i = fi.toInt(); val j = fj.toInt(); val tx = fi - i; val ty = fj - j
+        val k = j * e.w + i
+        return (a[k] * (1 - tx) + a[k + 1] * tx) * (1 - ty) + (a[k + e.w] * (1 - tx) + a[k + e.w + 1] * tx) * ty
+    }
+
+    /** How far the generic head is moved forward (+) or back at (x, y) to meet the face edge. */
+    // Not under the chin: the face already fades out there, and bending the neck would leave ridges round it.
+    private fun edgeShift(x: Float, y: Float) =
+        sampleGrid(edgeFit, edgeFit.shift, x, y, 0f) * smoothstep(minY + 0.005f, minY + 0.035f, y)
+
+    /** Distance (m) from (x, y) to the scanned face's outline, 0 on the face. */
+    fun distanceOutsideFace(x: Float, y: Float) = sampleGrid(edgeFit, edgeFit.outside, x, y, 0.05f)
+
     private fun headAndFace(x: Float, y: Float, z: Float): Float {
-        val g = headWithHair(x, y, z)
+        val g = headWithHair(x, y, z, edgeShift(x, y))
         val fs = faceSample(x, y) ?: return g
         // Under the chin the face mesh turns edge-on and would leave a shelf: fade it out there so the jaw and
         // neck take over smoothly.
