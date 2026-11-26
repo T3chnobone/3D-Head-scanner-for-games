@@ -211,12 +211,9 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             val top = kotlin.math.sin(lx * 900f + kotlin.math.sin(lz * 70f) * 2.5f)
             val side = kotlin.math.sin(kotlin.math.atan2(lx, lz) * 120f + kotlin.math.sin(y * 80f) * 2f)
             val u = ((y - head.headCy) / 0.08f).coerceIn(0f, 1f)
-            var strands = top * u + side * (1 - u)
-            if (head.hairStyle == HairStyle.AFRO) {
-                // Tight curls instead of straight strands.
-                strands = kotlin.math.sin(x * 650f) * kotlin.math.sin(y * 650f + 1.3f) * kotlin.math.sin(z * 650f + 2.1f) * 1.6f
-            }
+            val strands = top * u + side * (1 - u)
             val n = kotlin.math.sin(x * 371f + y * 533f + z * 197f) * 0.5f     // cheap variation
+            head.spikeShade(x, y, z)?.let { return scale(hair, it * (0.97f + 0.03f * n)) }
             head.lockShade(x, y, z)?.let { return scale(hair, it * (0.97f + 0.03f * n)) }
             head.paintedHair(x, y, z)?.let { return scale(hair, it * (0.98f + 0.02f * n)) }
             return scale(hair, 0.9f + 0.12f * strands + 0.05f * n)

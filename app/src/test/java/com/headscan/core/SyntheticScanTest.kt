@@ -224,41 +224,16 @@ class SyntheticScanTest {
     fun selfieShortHair() = selfie(1500, hair = HairStyle.SIDE_PART)
 
     @Test
-    fun selfieLongHair() = selfie(3500, hair = HairStyle.BOB)
+    fun selfieLongHair() = selfie(3500, hair = HairStyle.CURTAINS)
 
-    /** Renders every hairstyle on a skin-coloured synthetic person (build/gallery_*), for visual review. */
+    /** Renders every hairstyle on a skin-coloured synthetic person (build/gallery_*), in the GoldenEye look, for visual review. */
     @Test
     fun hairGallery() {
         skinMode = true
         try {
-            for (h in HairStyle.values()) selfie(1500, hair = h, outName = "gallery_$h")
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, outName = "gallery_GES_SIDE_PART")
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.MOHAWK, outName = "gallery_MOHAWK_green", recolor = 120f to 0.1f)
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SHORT, outName = "gallery_SHORT_blonde", recolor = null to 0.8f)
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.AFRO, outName = "gallery_AFRO_black", recolor = null to -0.7f)
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.BOB, outName = "gallery_BOB_red", recolor = 0f to 0.0f)
-        } finally { skinMode = false; images.clear() }
-    }
-
-    @Test
-    fun sweptLocks() {
-        skinMode = true
-        try {
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_1500")
-            selfie(3500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_3500")
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, outName = "swept_ginger", recolor = 18f to 0.25f)
-            for (h in listOf(HairStyle.SPIKY, HairStyle.SLICKED_BACK, HairStyle.CURTAINS, HairStyle.FAUX_HAWK, HairStyle.LONG_LOCKS))
-                selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = h, outName = "locks_$h")
-        } finally { skinMode = false; images.clear() }
-    }
-
-    @Test
-    fun classicHair() {
-        skinMode = true
-        try {
-            for (h in listOf(HairStyle.CLASSIC_PART, HairStyle.CLASSIC_SLICK, HairStyle.CLASSIC_TOUSLED))
-                selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = h, outName = "classic_$h")
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "classic_blonde", recolor = null to 0.75f)
+            for (h in HairStyle.values()) selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = h, outName = "gallery_$h")
+            selfie(3500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SPIKY, outName = "gallery_SPIKY_3500")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, outName = "gallery_SIDE_PART_blonde", recolor = HairColor.NATURAL + 0.75f to 0f)
         } finally { skinMode = false; images.clear() }
     }
 
@@ -273,16 +248,16 @@ class SyntheticScanTest {
     }
 
     @Test
-    fun selfieFaceMoved() = selfie(1500, hair = HairStyle.CREW_CUT, offset = floatArrayOf(0.015f, -0.02f, 0.02f))
+    fun selfieFaceMoved() = selfie(1500, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0.015f, -0.02f, 0.02f))
 
     @Test
     fun headSizeSliders() {
         skinMode = true
         try {
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_default")
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_narrow", headScale = floatArrayOf(0.8f, 1f, 1f))
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_short", headScale = floatArrayOf(1f, 0.8f, 1f))
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SWEPT, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_shallow", headScale = floatArrayOf(1f, 1f, 0.75f))
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_default")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_narrow", headScale = floatArrayOf(0.8f, 1f, 1f))
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_short", headScale = floatArrayOf(1f, 0.8f, 1f))
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_shallow", headScale = floatArrayOf(1f, 1f, 0.75f))
         } finally { skinMode = false; images.clear() }
     }
 
@@ -292,9 +267,9 @@ class SyntheticScanTest {
         try {
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.NONE, outName = "opt_nohair")
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.BUZZ, outName = "opt_wideface", wideFace = true)
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_auburn", recolor = HairColor.NATURAL + 0.36f to 0f)
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_blonde", recolor = HairColor.NATURAL + 0.75f to 0f)
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_grey", recolor = HairColor.NATURAL + 0.92f to 0f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, outName = "opt_auburn", recolor = HairColor.NATURAL + 0.36f to 0f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, outName = "opt_blonde", recolor = HairColor.NATURAL + 0.75f to 0f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, outName = "opt_grey", recolor = HairColor.NATURAL + 0.92f to 0f)
         } finally { skinMode = false; images.clear() }
     }
 

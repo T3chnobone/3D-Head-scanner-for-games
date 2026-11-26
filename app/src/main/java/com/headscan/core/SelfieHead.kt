@@ -9,7 +9,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Hair added to the generic head in Selfie mode. */
-enum class HairStyle { NONE, CLASSIC_PART, CLASSIC_SLICK, CLASSIC_TOUSLED, SWEPT, SPIKY, SLICKED_BACK, CURTAINS, FAUX_HAWK, LONG_LOCKS, BUZZ, CREW_CUT, SHORT, SIDE_PART, FLAT_TOP, MOHAWK, AFRO, BOB, BUN }
+enum class HairStyle { NONE, SIDE_PART, BUZZ, MOHICAN, CURTAINS, SPIKY }
 
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
@@ -279,99 +279,65 @@ class SelfieHead(
     /** 0..1: how much of the scalp at this point is covered by hair (soft hairline, never on the face). */
     private fun scalpCoverage(x: Float, y: Float, z: Float): Float {
         // Classic styles get a wider, painted-looking fade at the hairline.
-        val soft = if (isClassic) 0.009f else 0.004f
+        val soft = 0.006f
         return smoothstep(-soft, soft * 0.6f, y - hairlineY(x, z)) * (1f - faceMask(x, y, z))
     }
 
     /** Hair thickness grown out from the scalp for the chosen style (metres). */
     fun hairThickness(x: Float, y: Float, z: Float): Float {
-        if (hairStyle == HairStyle.BUZZ || hairStyle == HairStyle.NONE) return 0f
+        if (hairStyle == HairStyle.NONE) return 0f
         val cov = scalpCoverage(x, y, z)
         if (cov <= 0f) return 0f
         val u = (y - headCy) / ry
         val w = (z - headCz) / rz
         val lx = x - headCx
         val t = when (hairStyle) {
-            HairStyle.CREW_CUT -> 0.005f + 0.003f * smoothstep(0.4f, 0.9f, u)
-            HairStyle.SHORT -> {
-                // Natural short cut: a little fuller on top, slight forward fringe, tidy at the back.
-                0.007f + 0.006f * smoothstep(0.2f, 0.8f, u) + 0.004f * smoothstep(0.1f, 0.6f, w) * smoothstep(0.4f, 0.8f, u)
-            }
-            HairStyle.MOHAWK -> {
-                // Tall strip from forehead to nape, sides shaved.
-                val g = lx / 0.014f
-                val crest = exp(-g * g * g * g)        // flat-topped strip
-                0.0015f + 0.04f * crest * smoothstep(-0.2f, 0.45f, u) * smoothstep(-0.95f, -0.4f, w) *
-                    (1f - 0.75f * smoothstep(0.2f, 0.75f, w))     // lower at the front so it doesn't overhang
-            }
-            HairStyle.AFRO -> {
-                // Big rounded volume, fullest at the top and sides.
-                (0.03f + 0.022f * smoothstep(-0.3f, 0.6f, u)) * (1f - 0.65f * smoothstep(0.25f, 0.8f, w))
+            HairStyle.BUZZ -> 0.0015f
+            HairStyle.MOHICAN -> {
+                // Shaved sides; a raised strip down the middle that the spikes grow out of.
+                val g = lx / 0.02f
+                0.001f + 0.007f * exp(-g * g * g * g) * smoothstep(-0.3f, 0.2f, u)
             }
             HairStyle.SIDE_PART -> {
-                val top = 0.006f + 0.010f * smoothstep(0.15f, 0.8f, u)
-                val quiff = 0.005f * smoothstep(0.2f, 0.7f, w) * smoothstep(0.45f, 0.9f, u)
-                val g = (lx - 0.32f * rx) / 0.006f
-                val groove = 0.006f * exp(-g * g) * smoothstep(0.35f, 0.7f, u) * smoothstep(-0.4f, 0.1f, w)
-                top + quiff - groove
-            }
-            HairStyle.FLAT_TOP -> {
-                // Tall on top but kept inside the skull outline, so the sides stay upright (no brim).
-                val radial = sqrt(lx * lx / (rx * rx) + w * w)
-                0.005f + 0.024f * smoothstep(0.45f, 0.8f, u) * (1f - smoothstep(0.5f, 0.85f, radial))
-            }
-            HairStyle.BOB -> 0.009f + 0.008f * smoothstep(0.3f, -0.5f, u)
-            HairStyle.BUN -> 0.005f
-            // under-layer beneath the locks
-            HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.LONG_LOCKS -> 0.006f + 0.010f * smoothstep(0.2f, 0.9f, u)
-            HairStyle.SPIKY -> 0.006f + 0.006f * smoothstep(0.2f, 0.9f, u)
-            // Classic shells: one smooth helmet, detail is painted in the texture.
-            HairStyle.CLASSIC_PART -> {
-                val big = smoothstep(0.3f * rx, -0.6f * rx, lx)      // fuller on the side the hair is combed over to
+                // Combed over from a side part: fuller on top and on the side it's combed towards, short at the sides.
+                val big = smoothstep(0.3f * rx, -0.6f * rx, lx)
                 val g = (lx - PART_X * rx) / 0.006f
                 val part = 0.003f * exp(-g * g) * smoothstep(0.35f, 0.7f, u) * smoothstep(-0.5f, 0.2f, w)
-                0.007f + 0.008f * smoothstep(0.1f, 0.8f, u) + 0.004f * big * smoothstep(0.0f, 0.6f, u) +
-                    0.004f * smoothstep(0.3f, 0.8f, w) * smoothstep(0.4f, 0.85f, u) - part
+                0.004f + 0.011f * smoothstep(0.1f, 0.8f, u) + 0.004f * big * smoothstep(0.0f, 0.6f, u) +
+                    0.005f * smoothstep(0.3f, 0.8f, w) * smoothstep(0.4f, 0.85f, u) - part
             }
-            HairStyle.CLASSIC_SLICK -> 0.006f + 0.006f * smoothstep(0.1f, 0.8f, u) + 0.004f * smoothstep(0.4f, 0.9f, w) * smoothstep(0.5f, 0.9f, u)
-            HairStyle.CLASSIC_TOUSLED -> {
-                val bump = kotlin.math.sin(lx * 140f + 1.3f) * kotlin.math.sin(z * 120f) * kotlin.math.sin(y * 110f + 0.7f)
-                0.009f + 0.008f * smoothstep(0.1f, 0.8f, u) + 0.003f * bump * smoothstep(0.2f, 0.7f, u)
+            HairStyle.CURTAINS -> {
+                // Centre part, full on top; the long sides are the curtain shape in [extraHairSdf].
+                val g = lx / 0.005f
+                val part = 0.0035f * exp(-g * g) * smoothstep(0.35f, 0.7f, u) * smoothstep(-0.6f, 0.2f, w)
+                0.008f + 0.007f * smoothstep(0.1f, 0.8f, u) - part
             }
-            HairStyle.SLICKED_BACK -> 0.005f + 0.007f * smoothstep(0.2f, 0.9f, u)
-            HairStyle.FAUX_HAWK -> {
-                val g = lx / 0.036f
-                0.003f + 0.008f * exp(-g * g) * smoothstep(0.1f, 0.8f, u)
-            }
-            HairStyle.BUZZ, HairStyle.NONE -> 0f
+            HairStyle.SPIKY -> 0.004f + 0.006f * smoothstep(0.2f, 0.9f, u)   // short base under the spikes
+            HairStyle.NONE -> 0f
         }
         return t * cov * (1f - hairCutAroundEars(x, y, z))
     }
 
-    /** Extra hair shapes that stick out beyond the scalp (bob curtain, bun). 1 = none. */
+    /** Hair shapes that hang beyond the scalp (the long sides of the curtains cut). 1 = none. */
     private fun extraHairSdf(x: Float, y: Float, z: Float): Float {
+        if (hairStyle != HairStyle.CURTAINS) return 1f
         val lx = x - headCx; val ly = y - headCy; val lz = z - headCz
-        return when (hairStyle) {
-            HairStyle.BOB -> {
-                // Chin-length curtain around the back and sides, tapering in at the bottom.
-                val bottom = minY + 0.01f
-                val taper = 1f - 0.12f * smoothstep(headCy - 0.02f, bottom, y)
-                val ex = lx / ((rx + 0.017f) * taper); val ez = (lz + 0.005f) / ((rz + 0.014f) * taper)
-                val tube = (sqrt(ex * ex + ez * ez) - 1f) * rx
-                val front = lz - rz * 0.18f
-                val shell = smax(smax(tube, front, 0.01f), smax(bottom - y, ly, 0.01f), 0.008f)
-                max(shell, faceMask(x, y, z) * 0.02f - 0.001f)
-            }
-            HairStyle.BUN -> {
-                val bx = lx; val by = ly - 0.35f * ry; val bz = lz + rz + 0.008f
-                sqrt(bx * bx + by * by + bz * bz) - 0.03f
-            }
-            else -> 1f
-        }
+        // Jaw-length hair around the sides and back, tapering in a little at the ends, open at the face.
+        val bottom = minY + 0.03f
+        val taper = 1f - 0.1f * smoothstep(headCy - 0.02f, bottom, y)
+        val ex = lx / ((rx + 0.02f) * taper); val ez = (lz + 0.004f) / ((rz + 0.014f) * taper)
+        val tube = (sqrt(ex * ex + ez * ez) - 1f) * rx
+        val front = lz - rz * 0.28f
+        // Ragged, pointed ends instead of a straight cut.
+        val ang = kotlin.math.atan2(lx, lz)
+        val ragged = 0.012f * abs(kotlin.math.sin(ang * 9f))
+        val shell = smax(smax(tube, front, 0.008f), smax(bottom + ragged - y, ly, 0.01f), 0.006f)
+        return max(shell, faceMask(x, y, z) * 0.02f - 0.001f)
     }
 
-    /** 0..1 hair colour amount for texturing (scalp coverage, or 1 on bob / bun shapes). */
+    /** 0..1 hair colour amount for texturing (scalp coverage, or 1 on the hanging hair), with stubble speckle on shaved hair. */
     fun hairColorAmount(x: Float, y: Float, z: Float): Float {
+        if (hairStyle == HairStyle.CURTAINS) return hairColorRaw(x, y, z)   // ears are under the hair
         val onEar = 1f - smoothstep(0.001f, 0.006f, earSdf(x, y, z))
         return hairColorRaw(x, y, z) * (1f - onEar)
     }
@@ -379,20 +345,49 @@ class SelfieHead(
     private fun hairColorRaw(x: Float, y: Float, z: Float): Float {
         if (locks.isNotEmpty()) {
             val on = lockCover(x, y, z)
-            if (on > 0f) return max(on, scalpCoverage(x, y, z))
+            if (on > 0.5f) return 1f
         }
+        if (spikes.isNotEmpty() && spikesSdf(x, y, z) < 0.003f) return 1f
         if (extraHairSdf(x, y, z) < 0.004f && genericSdf(x, y, z) > 0.003f) return 1f - faceMask(x, y, z)
         val c = scalpCoverage(x, y, z)
+        if (c <= 0f) return 0f
         return when (hairStyle) {
-            HairStyle.BUZZ -> c * 0.6f
             HairStyle.NONE -> 0f
-            HairStyle.MOHAWK -> {
-                // Full colour on the crest, light stubble on the shaved sides.
-                val g = (x - headCx) / 0.016f
-                c * (0.35f + 0.65f * exp(-g * g * g * g))
+            HairStyle.BUZZ -> c * stubble(x, y, z, 0.62f)
+            HairStyle.MOHICAN -> {
+                // Full colour on the strip, stubble on the shaved sides.
+                val g = (x - headCx) / 0.022f
+                val crest = exp(-g * g * g * g) * smoothstep(-0.3f, 0.2f, (y - headCy) / ry)
+                c * (crest + (1f - crest) * stubble(x, y, z, 0.42f))
             }
             else -> c
         }
+    }
+
+    /** Shaved-hair speckle: [density] on average, broken up into dots about a millimetre across. */
+    private fun stubble(x: Float, y: Float, z: Float, density: Float): Float {
+        val n = valueNoise(x / 0.0011f, y / 0.0011f, z / 0.0011f) * 0.65f + valueNoise(x / 0.004f, y / 0.004f, z / 0.004f) * 0.35f
+        return (density * (0.35f + 1.3f * n)).coerceIn(0f, 1f)
+    }
+
+    private fun hash(i: Int, j: Int, k: Int): Float {
+        var h = i * 374761393 + j * 668265263 + k * 1274126177
+        h = (h xor (h ushr 13)) * 1103515245
+        h = h xor (h ushr 16)
+        return (h and 0xFFFF) / 65535f
+    }
+
+    /** Smooth 3D value noise, 0..1. */
+    private fun valueNoise(x: Float, y: Float, z: Float): Float {
+        val ix = kotlin.math.floor(x).toInt(); val iy = kotlin.math.floor(y).toInt(); val iz = kotlin.math.floor(z).toInt()
+        var fx = x - ix; var fy = y - iy; var fz = z - iz
+        fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); fz = fz * fz * (3 - 2 * fz)
+        fun l(a: Float, b: Float, t: Float) = a + (b - a) * t
+        val x00 = l(hash(ix, iy, iz), hash(ix + 1, iy, iz), fx)
+        val x10 = l(hash(ix, iy + 1, iz), hash(ix + 1, iy + 1, iz), fx)
+        val x01 = l(hash(ix, iy, iz + 1), hash(ix + 1, iy, iz + 1), fx)
+        val x11 = l(hash(ix, iy + 1, iz + 1), hash(ix + 1, iy + 1, iz + 1), fx)
+        return l(l(x00, x10, fy), l(x01, x11, fy), fz)
     }
 
     // ------------------------------------------------------------------ ears
@@ -431,7 +426,7 @@ class SelfieHead(
 
     /** 0..1: short styles are cut back around the ears so the ears show. */
     private fun hairCutAroundEars(x: Float, y: Float, z: Float): Float {
-        if (hairStyle == HairStyle.BOB || hairStyle == HairStyle.AFRO || hairStyle == HairStyle.LONG_LOCKS) return 0f
+        if (hairStyle == HairStyle.CURTAINS) return 0f
         val dx = abs(x - headCx) - earSkullX; val dy = (y - earY) / 1.4f; val dz = z - earZ
         val d = sqrt(dx * dx + dy * dy + dz * dz)
         return 1f - smoothstep(0.024f * earScale, 0.036f * earScale, d)
@@ -452,8 +447,8 @@ class SelfieHead(
     /** Head + neck + hair, before the face is merged in. */
     private fun headWithHair(x: Float, y: Float, z: Float): Float {
         var g = genericSdf(x, y, z) - hairThickness(x, y, z)
-        g = smin(g, earSdf(x, y, z), 0.003f)
-        if (hairStyle == HairStyle.FLAT_TOP) g = max(g, y - (headCy + ry + 0.016f))
+        // Curtains cover the ears, so they're left off (they would poke through the hair).
+        if (hairStyle != HairStyle.CURTAINS) g = smin(g, earSdf(x, y, z), 0.003f)
         val extra = extraHairSdf(x, y, z)
         if (extra < 0.05f) g = smin(g, extra, 0.006f)
         return g
@@ -461,7 +456,8 @@ class SelfieHead(
 
     /** Signed distance of the personalised head: generic head with the real face surface merged in front. */
     fun sdf(x: Float, y: Float, z: Float): Float {
-        val base = headAndFace(x, y, z)
+        var base = headAndFace(x, y, z)
+        if (spikes.isNotEmpty()) base = smin(base, spikesSdf(x, y, z), 0.0025f)
         if (locks.isEmpty()) return base
         // Locks lie on top of everything, so a fringe can fall over the upper forehead.
         return smin(base, locksSdf(x, y, z), 0.0025f)
@@ -482,7 +478,7 @@ class SelfieHead(
     }
 
 
-    // ------------------------------------------------------------------ sculpted locks (SWEPT)
+    // ------------------------------------------------------------------ sculpted locks (spikes, curtain strands)
 
     /** One clump of hair: a flattened, tapering tube along a curve over the scalp, ending in a point. */
     private class Lock(val p: FloatArray, val r: FloatArray, val n: FloatArray, val cx: Float, val cy: Float, val cz: Float, val bound: Float)
@@ -491,12 +487,7 @@ class SelfieHead(
 
     private val locks: List<Lock> by lazy {
         when (hairStyle) {
-            HairStyle.SWEPT -> buildSweptLocks()
-            HairStyle.SPIKY -> buildSpikyLocks()
-            HairStyle.SLICKED_BACK -> buildSlickedLocks()
             HairStyle.CURTAINS -> buildCurtainLocks()
-            HairStyle.FAUX_HAWK -> buildFauxHawkLocks()
-            HairStyle.LONG_LOCKS -> buildLongLocks()
             else -> emptyList()
         }
     }
@@ -566,139 +557,113 @@ class SelfieHead(
         return floatArrayOf(c * kotlin.math.sin(a).toFloat(), u, c * kotlin.math.cos(a).toFloat())
     }
 
-    /**
-     * Game-style swept cut: chunky clumps radiate from a crown whorl at the back of the head; the front ones
-     * sweep forward and across into a pointed side fringe, the side ones comb down over the ears and the back
-     * ones fall to the nape.
-     */
-    private fun buildSweptLocks(): List<Lock> {
-        val out = ArrayList<Lock>()
-        val crown = dir(0.72f, 160f)              // whorl: high at the back, a little to +X
-        // Lowest a fringe tip may reach: above the brows.
-        val tipU = ((maxY - 0.03f - headCy) / ry).coerceIn(0.2f, 0.8f)
-        val fringeU = ((maxY - 0.005f - headCy) / ry).coerceIn(0.3f, 0.9f)
-        // Fringe: big clumps sweeping forward and across to -X, pointed tips hanging over the forehead
-        // at staggered lengths, the outermost flicking out past the temple.
-        // Each starts high on the right of the head and ends lower and further left, so the fringe reads
-        // as one diagonal swoop rather than straight bangs.
-        val fringe = listOf(
-            floatArrayOf(60f, 10f, fringeU + 0.06f, 0.5f), floatArrayOf(40f, -12f, tipU + 0.03f, 1f),
-            floatArrayOf(18f, -35f, tipU - 0.02f, 1.2f), floatArrayOf(-5f, -58f, tipU + 0.01f, 1.4f),
-            floatArrayOf(-28f, -82f, tipU - 0.14f, 2f),
-        )
-        for ((k, f) in fringe.withIndex()) {
-            val start = dir(0.9f - 0.03f * (k % 2), f[0] + 60f)
-            out.add(lock(start, dir(f[2], f[1]), w = 0.055f, lift = 0.013f, flick = 0.006f * f[3]))
+    // ------------------------------------------------------------------ spikes (SPIKY, MOHICAN)
+
+    /** One spike: a cone from base a (radius [ra]) to a sharp tip b, with a bounding sphere for quick rejects. */
+    private class Spike(val ax: Float, val ay: Float, val az: Float, val bx: Float, val by: Float, val bz: Float, val ra: Float) {
+        val mx = (ax + bx) / 2; val my = (ay + by) / 2; val mz = (az + bz) / 2
+        val bound = sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az)) / 2 + ra
+    }
+
+    private val spikes: List<Spike> by lazy {
+        when (hairStyle) {
+            HairStyle.SPIKY -> buildSpiky()
+            HairStyle.MOHICAN -> buildMohican()
+            else -> emptyList()
         }
-        // Top: big clumps from the crown arching forward, giving the cut its volume.
-        for ((k, deg) in listOf(60f, 5f, -50f).withIndex()) {
-            out.add(lock(crown, dir(0.66f - 0.05f * (k % 2), deg), w = 0.066f, lift = 0.019f, flick = 0.003f))
-        }
-        // Sides: combed down and back over the ears, pointed tips.
-        for (side in listOf(-1f, 1f)) for ((k, a) in listOf(65f, 95f, 125f).withIndex()) {
-            val start = dir(0.72f, side * (a - 15f))
-            out.add(lock(start, dir(-0.22f - 0.08f * (k % 2), side * (a + 20f)), w = 0.058f, lift = 0.009f, flick = 0.008f))
-        }
-        // Back: falling from the whorl to the nape.
-        for ((k, a) in listOf(-155f, 180f, 155f, 130f, -130f, 105f, -105f).withIndex()) {
-            out.add(lock(crown, dir(-0.48f - 0.08f * (k % 2), a), w = 0.062f, lift = 0.009f, flick = 0.006f))
+    }
+
+    /** A spike rooted on the skull at unit direction (dx,dy,dz), leaning [up] towards +Y and [back] towards -Z. */
+    private fun spike(dx: Float, dy: Float, dz: Float, len: Float, ra: Float, up: Float, back: Float, jx: Float, jz: Float): Spike {
+        val p = FloatArray(3); val n = FloatArray(3)
+        scalpPoint(dx, dy, dz, 0.003f, p, 0, n)
+        var vx = n[0] + jx; var vy = n[1] + up; var vz = n[2] - back + jz
+        val l = sqrt(vx * vx + vy * vy + vz * vz); vx /= l; vy /= l; vz /= l
+        return Spike(p[0] - n[0] * 0.004f, p[1] - n[1] * 0.004f, p[2] - n[2] * 0.004f, p[0] + vx * len, p[1] + vy * len, p[2] + vz * len, ra)
+    }
+
+    /** Spiky cut: lots of sharp spikes all over the top, standing up and out; shorter ones round the sides. */
+    private fun buildSpiky(): List<Spike> {
+        val out = ArrayList<Spike>()
+        val n = 190
+        val golden = Math.PI.toFloat() * (3f - sqrt(5f))
+        for (i in 0 until n) {
+            // Fibonacci points over the sphere, kept where the scalp has hair.
+            val dy = 1f - 2f * (i + 0.5f) / n
+            val rr = sqrt((1f - dy * dy).coerceAtLeast(0f))
+            val a = golden * i
+            val dx = rr * kotlin.math.sin(a); val dz = rr * kotlin.math.cos(a)
+            if (dy < 0.05f) continue
+            val px = headCx + dx * rx; val py = headCy + dy * ry; val pz = headCz + dz * rz
+            if (py < hairlineY(px, pz) + 0.008f) continue
+            val j1 = hash(i, 1, 7) - 0.5f; val j2 = hash(i, 3, 5) - 0.5f; val j3 = hash(i, 9, 2)
+            val top = smoothstep(0.15f, 0.7f, dy)
+            val len = (0.02f + 0.026f * top) * (0.8f + 0.4f * j3)
+            out.add(spike(dx, dy, dz, len, 0.009f + 0.003f * top, up = 0.35f * top, back = 0.2f, jx = 0.35f * j1, jz = 0.35f * j2))
         }
         return out
     }
 
-    /** Short spiky cut: clumps all over that rise off the head into sharp points, pointing up and back. */
-    private fun buildSpikyLocks(): List<Lock> {
-        val out = ArrayList<Lock>()
-        val tipU = ((maxY - 0.01f - headCy) / ry).coerceIn(0.3f, 0.85f)
-        // Front row: short spikes flicking up from the hairline.
-        for ((k, d) in listOf(-50f, -25f, 0f, 25f, 50f).withIndex()) {
-            out.add(lock(dir(0.82f, d + 180f * 0f + 15f * (k % 2) - 5f), dir(tipU + 0.12f, d * 1.1f), w = 0.04f, lift = 0.01f, flick = 0.022f))
-        }
-        // Top and crown: spikes pointing up and back.
-        for (ring in 0..1) for (j in 0 until 6) {
-            val deg = -150f + 60f * j + 30f * ring
-            val u0 = if (ring == 0) 0.95f else 0.7f
-            out.add(lock(dir(u0, deg), dir(u0 - 0.28f, deg + 8f), w = 0.044f, lift = 0.012f, flick = 0.026f))
-        }
-        // Sides and back: shorter spikes pointing down and back.
-        for (j in 0 until 8) {
-            val deg = 70f + 31f * j
-            out.add(lock(dir(0.4f, deg), dir(0.02f - 0.06f * (j % 2), deg + 15f), w = 0.042f, lift = 0.008f, flick = 0.014f))
-        }
-        for (j in 0 until 7) {
-            val deg = 90f + 30f * j
-            out.add(lock(dir(0.05f, deg), dir(-0.32f - 0.06f * (j % 2), deg + 10f), w = 0.044f, lift = 0.006f, flick = 0.01f))
+    /** Mohican: a strip of tall spikes from the forehead over the top to the crown, standing up and leaning back. */
+    private fun buildMohican(): List<Spike> {
+        val out = ArrayList<Spike>()
+        val front = Math.toDegrees(kotlin.math.asin(((maxY - headCy) / ry).coerceIn(0.3f, 0.85f).toDouble())).toFloat()
+        var phi = front + 4f
+        var k = 0
+        while (phi < 150f) {
+            val r = Math.toRadians(phi.toDouble())
+            val tall = 0.55f + 0.45f * kotlin.math.sin(Math.toRadians(((phi - front) / (150f - front) * 180f).toDouble())).toFloat()
+            for (col in listOf(-1f, 0f, 1f)) {
+                val j1 = hash(k, col.toInt() + 5, 3) - 0.5f; val j3 = hash(k, col.toInt() + 2, 8)
+                out.add(spike(0.1f * col + 0.04f * (k % 2), kotlin.math.sin(r).toFloat(), kotlin.math.cos(r).toFloat(),
+                    len = (0.026f + 0.024f * tall) * (0.8f + 0.4f * j3) * (if (col == 0f) 1f else 0.8f), ra = 0.008f,
+                    up = 0.25f, back = 0.25f, jx = 0.25f * col + 0.2f * j1, jz = 0f))
+            }
+            phi += 9f; k++
         }
         return out
     }
 
-    /** Slicked back with a quiff: clumps start at the forehead hairline and sweep over the top to the nape. */
-    private fun buildSlickedLocks(): List<Lock> {
-        val out = ArrayList<Lock>()
-        val frontU = ((maxY - headCy) / ry).coerceIn(0.35f, 0.85f)
-        for ((k, d) in listOf(-50f, -25f, 0f, 25f, 50f).withIndex()) {
-            out.add(lock(dir(frontU, d), dir(0.15f + 0.08f * (k % 2), 180f - d * 1.4f), w = 0.07f, lift = 0.012f, flick = 0.004f))
+    private class SpikeHit(var d: Float = 1f, var t: Float = 0f, var idx: Int = -1)
+
+    /** Signed distance to the spikes (union). */
+    private fun spikesSdf(x: Float, y: Float, z: Float, hit: SpikeHit? = null): Float {
+        var best = 1f
+        for ((i, sp) in spikes.withIndex()) {
+            val qx = x - sp.mx; val qy = y - sp.my; val qz = z - sp.mz
+            if (sqrt(qx * qx + qy * qy + qz * qz) - sp.bound > min(best, 0.01f)) continue
+            val d = capsule(x, y, z, sp.ax, sp.ay, sp.az, sp.bx, sp.by, sp.bz, sp.ra, 0.0003f)
+            if (d < best) {
+                best = d
+                if (hit != null) {
+                    val ux = sp.bx - sp.ax; val uy = sp.by - sp.ay; val uz = sp.bz - sp.az
+                    hit.t = (((x - sp.ax) * ux + (y - sp.ay) * uy + (z - sp.az) * uz) / (ux * ux + uy * uy + uz * uz)).coerceIn(0f, 1f)
+                    hit.d = d; hit.idx = i
+                }
+            }
         }
-        for (side in listOf(-1f, 1f)) for ((k, a) in listOf(75f, 105f).withIndex()) {
-            out.add(lock(dir(0.55f, side * (a - 25f)), dir(-0.2f - 0.08f * k, side * (a + 45f)), w = 0.055f, lift = 0.008f, flick = 0.004f))
-        }
-        for ((k, a) in listOf(-160f, 180f, 160f).withIndex()) {
-            out.add(lock(dir(0.6f, a * 0.3f), dir(-0.5f - 0.06f * (k % 2), a), w = 0.06f, lift = 0.01f, flick = 0.004f))
-        }
-        return out
+        return best
     }
 
-    /** Centre parting with a curtain fringe: clumps fall from the parting to either side of the forehead. */
+    /** Shading on a spike (around 1): dark at the root, lighter towards the tip. Null if not on a spike. */
+    fun spikeShade(x: Float, y: Float, z: Float): Float? {
+        if (spikes.isEmpty()) return null
+        val h = SpikeHit()
+        spikesSdf(x, y, z, h)
+        if (h.idx < 0 || h.d > 0.003f) return null
+        val strands = 0.06f * kotlin.math.sin((x * 1300f + z * 1100f) + h.idx * 2.3f)
+        return 0.72f + 0.42f * smoothstep(0f, 0.9f, h.t) + strands
+    }
+
+    /** Curtains: thin pointed strands falling from the centre part to frame the face. */
     private fun buildCurtainLocks(): List<Lock> {
         val out = ArrayList<Lock>()
-        val tipU = ((maxY - 0.03f - headCy) / ry).coerceIn(0.2f, 0.8f)
+        val tipU = ((maxY - 0.02f - headCy) / ry).coerceIn(0.2f, 0.8f)
         for (side in listOf(-1f, 1f)) {
-            // Fringe curtains, longest at the temples.
-            for ((k, d) in listOf(18f, 42f, 66f).withIndex()) {
-                out.add(lock(dir(0.92f, side * 5f), dir(tipU - 0.06f * k, side * d), w = 0.05f, lift = 0.012f, flick = 0.006f))
+            for ((k, d) in listOf(30f, 48f, 64f).withIndex()) {
+                out.add(lock(dir(0.94f, side * 6f), dir(tipU + 0.06f - 0.1f * k, side * d), w = 0.036f, lift = 0.011f, flick = 0.003f,
+                    drop = if (k == 2) 0.045f else 0f))
             }
-            // Sides down over the ears.
-            for ((k, a) in listOf(90f, 120f).withIndex()) {
-                out.add(lock(dir(0.9f, side * (a - 60f)), dir(-0.25f - 0.07f * k, side * (a + 10f)), w = 0.058f, lift = 0.009f, flick = 0.006f))
-            }
-        }
-        for ((k, a) in listOf(-155f, 180f, 155f, 130f, -130f).withIndex()) {
-            out.add(lock(dir(0.85f, a * 0.4f), dir(-0.48f - 0.08f * (k % 2), a), w = 0.06f, lift = 0.01f, flick = 0.005f))
-        }
-        return out
-    }
-
-    /** Faux hawk: shaved-looking sides, a ridge of clumps along the middle rising into points. */
-    private fun buildFauxHawkLocks(): List<Lock> {
-        val out = ArrayList<Lock>()
-        val frontU = ((maxY - headCy) / ry).coerceIn(0.35f, 0.85f)
-        // Ridge: rows of clumps combed up from each side into the middle, tips pointing up and back.
-        for (j in 0 until 6) {
-            val phi = Math.toRadians((35.0 + 22.0 * j)).toFloat()
-            val my = kotlin.math.sin(phi); val mz = kotlin.math.cos(phi)
-            val phi2 = phi + 0.2f
-            for (side in listOf(-1f, 1f)) {
-                val start = floatArrayOf(side * 0.5f, my * 0.87f, mz * 0.87f)
-                val end = floatArrayOf(side * 0.04f, kotlin.math.sin(phi2), kotlin.math.cos(phi2))
-                out.add(lock(start, end, w = 0.046f, lift = 0.011f + 0.002f * min(j, 3), flick = 0.016f))
-            }
-        }
-        return out
-    }
-
-    /** Long hair: clumps from a crown parting run over the head and hang past the jaw at the sides and back. */
-    private fun buildLongLocks(): List<Lock> {
-        val out = ArrayList<Lock>()
-        val tipU = ((maxY - 0.03f - headCy) / ry).coerceIn(0.2f, 0.8f)
-        val crownU = 0.9f
-        // Side-swept fringe.
-        for ((k, d) in listOf(25f, -5f, -35f).withIndex()) {
-            out.add(lock(dir(crownU, d + 70f), dir(tipU - 0.03f * k, d - 25f), w = 0.055f, lift = 0.012f, flick = 0.006f))
-        }
-        // Long clumps around the sides and back, hanging below the jaw.
-        val len = (headCy - minY) * 0.8f
-        for ((k, a) in listOf(-75f, -95f, -115f, -135f, -158f, 180f, 158f, 135f, 115f, 95f, 75f).withIndex()) {
-            out.add(lock(dir(crownU, a * 0.3f), dir(-0.15f, a), w = 0.07f, lift = 0.01f, flick = 0f, drop = len * (0.85f + 0.15f * (k % 2))))
         }
         return out
     }
@@ -767,51 +732,37 @@ class SelfieHead(
         return (0.93f + 0.07f * strands) * sheen * edge
     }
 
-    // ------------------------------------------------------------------ classic painted hair
-
-    val isClassic get() = hairStyle == HairStyle.CLASSIC_PART || hairStyle == HairStyle.CLASSIC_SLICK || hairStyle == HairStyle.CLASSIC_TOUSLED
+    // ------------------------------------------------------------------ painted hair
 
     /**
-     * Painted hair shading for the classic (helmet) styles, around 1: comb lines following the style's
-     * direction, a soft baked sheen across the crown, darker roots near the hairline and a part line.
+     * Painted hair shading around 1 for the combed styles (side parting, curtains): fine strands following the
+     * comb direction, a soft sheen across the crown, darker roots near the hairline and a visible part line.
      * Null for other styles.
      */
     fun paintedHair(x: Float, y: Float, z: Float): Float? {
-        if (!isClassic) return null
+        if (hairStyle != HairStyle.SIDE_PART && hairStyle != HairStyle.CURTAINS) return null
         val lx = x - headCx; val ly = y - headCy; val lz = z - headCz
         val u = (ly / ry).coerceIn(-1f, 1f)
         val w = (lz / rz).coerceIn(-1.2f, 1.2f)
-        // Coordinate that is constant along a strand.
-        val across = when (hairStyle) {
-            HairStyle.CLASSIC_PART -> {
-                // Combed sideways away from the part; on the sides it falls downward, curving back.
-                val top = lz + 0.25f * (lx - PART_X * rx)
-                val side = kotlin.math.atan2(lx, lz) * 0.06f + 0.2f * ly
-                top * smoothstep(0.1f, 0.55f, u) + side * (1f - smoothstep(0.1f, 0.55f, u))
-            }
-            HairStyle.CLASSIC_SLICK -> {
-                // Combed straight back over the top; swept back horizontally on the sides.
-                val top = kotlin.math.atan2(lx, ly + 0.06f) * 0.07f
-                top * smoothstep(0.0f, 0.5f, u) + ly * (1f - smoothstep(0.0f, 0.5f, u))
-            }
-            else -> {
-                // Tousled: strands swirl out from the crown in short clumps.
-                kotlin.math.atan2(lx, lz + 0.03f) * 0.05f + 0.012f * kotlin.math.sin(ly * 90f + lx * 60f)
-            }
-        }
-        val wobble = 0.0015f * kotlin.math.sin(x * 230f + y * 170f + z * 90f)
-        val f = (across + wobble) * 1400f
-        val strands = 0.55f * kotlin.math.sin(f) + 0.3f * kotlin.math.sin(f * 2.3f + 1.1f) + 0.15f * kotlin.math.sin(f * 5.1f + 0.4f)
-        // Baked sheen band, a little in front of the crown.
+        val partX = if (hairStyle == HairStyle.SIDE_PART) PART_X * rx else 0f
+        // Coordinate that is constant along a strand: on top the hair is combed sideways away from the part,
+        // on the sides it falls down and back.
+        val top = lz + 0.25f * (lx - partX) * (if (hairStyle == HairStyle.CURTAINS) kotlin.math.sign(lx) * -0.6f else 1f)
+        val side = kotlin.math.atan2(lx, lz) * 0.06f + (if (hairStyle == HairStyle.CURTAINS) 0.05f else 0.2f) * ly
+        val blendTop = smoothstep(0.1f, 0.55f, u)
+        val across = top * blendTop + side * (1f - blendTop)
+        val wobble = 0.0006f * kotlin.math.sin(x * 230f + y * 170f + z * 90f)
+        val f = (across + wobble) * 1700f
+        val strands = 0.5f * kotlin.math.sin(f) + 0.3f * kotlin.math.sin(f * 2.3f + 1.1f) + 0.2f * kotlin.math.sin(f * 5.1f + 0.4f)
+        // Clumps: broader light/dark bands so the hair reads as locks, not a flat helmet.
+        val clump = kotlin.math.sin((across + wobble) * 260f + 0.7f)
         val sb = (u - 0.72f + 0.1f * w) / 0.12f
-        val sheen = 1f + 0.22f * exp(-sb * sb)
-        // Darker towards the hairline (roots and shadow), like the painted hair of the era.
-        val edge = 0.82f + 0.18f * smoothstep(0f, 0.025f, y - hairlineYPublic(x, z))
-        var shade = (0.92f + 0.1f * strands) * sheen * edge
-        if (hairStyle == HairStyle.CLASSIC_PART) {
-            val g = (lx - PART_X * rx) / 0.0025f
-            shade *= 1f - 0.45f * exp(-g * g) * smoothstep(0.4f, 0.75f, u) * smoothstep(-0.4f, 0.2f, w)
-        }
+        val sheen = 1f + 0.2f * exp(-sb * sb)
+        val edge = 0.8f + 0.2f * smoothstep(0f, 0.025f, y - hairlineYPublic(x, z))
+        var shade = (0.9f + 0.1f * strands + 0.04f * clump) * sheen * edge
+        val g = (lx - partX) / 0.0022f
+        // Part line: scalp shows through.
+        shade *= 1f - 0.5f * exp(-g * g) * smoothstep(0.4f, 0.75f, u) * smoothstep(-0.5f, 0.2f, w)
         return shade
     }
 
@@ -819,7 +770,7 @@ class SelfieHead(
 
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
-        val pad = when (hairStyle) { HairStyle.BUZZ, HairStyle.NONE -> 0.035f; HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.SLICKED_BACK, HairStyle.LONG_LOCKS -> 0.06f; HairStyle.SPIKY, HairStyle.FAUX_HAWK -> 0.08f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
+        val pad = when (hairStyle) { HairStyle.BUZZ, HairStyle.NONE -> 0.035f; HairStyle.CURTAINS -> 0.06f; HairStyle.SPIKY, HairStyle.MOHICAN -> 0.085f; else -> 0.05f }
         val x0 = min(headCx - rx, minX) - pad; val x1 = max(headCx + rx, maxX) + pad
         val y0 = neckBottom; val y1 = max(headCy + ry, maxY) + pad
         val z0 = headCz - rz - pad; val z1 = max(noseZ, headCz + rz) + pad

@@ -123,7 +123,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var targetTriangles = LOW_TRIANGLES
     private lateinit var selfie: SelfieCapture
     private var headStyle = HeadStyle.REALISTIC
-    private var hairStyle = HairStyle.SWEPT
+    private var hairStyle = HairStyle.SIDE_PART
     private lateinit var hairGroup: View
     private lateinit var editPanel: View
     private lateinit var editBars: List<SeekBar>
@@ -165,7 +165,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         applySystemBarInsets()
         headStyle = if (prefs.getString("style", "") == HeadStyle.GOLDENEYE_SOURCE.name) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
         hairGroup = findViewById(R.id.hair_group)
-        hairStyle = HairStyle.values().firstOrNull { it.name == prefs.getString("hair", "") } ?: HairStyle.SWEPT
+        hairStyle = HairStyle.values().firstOrNull { it.name == prefs.getString("hair", "") } ?: HairStyle.SIDE_PART
         val hairSpinner = findViewById<android.widget.Spinner>(R.id.hair_spinner)
         setupHairSpinner(hairSpinner, hairStyle) { h ->
             hairStyle = h
@@ -929,24 +929,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private fun hairLabel(h: HairStyle) = when (h) {
         HairStyle.NONE -> "No hair"
-        HairStyle.CLASSIC_PART -> "Classic side part"
-        HairStyle.CLASSIC_SLICK -> "Classic slicked back"
-        HairStyle.CLASSIC_TOUSLED -> "Classic tousled"
-        HairStyle.SWEPT -> "Swept locks"
-        HairStyle.SPIKY -> "Spiky"
-        HairStyle.SLICKED_BACK -> "Slicked back"
-        HairStyle.CURTAINS -> "Curtains"
-        HairStyle.FAUX_HAWK -> "Faux hawk"
-        HairStyle.LONG_LOCKS -> "Long locks"
-        HairStyle.BUZZ -> "Buzz cut"
-        HairStyle.CREW_CUT -> "Crew cut"
-        HairStyle.SHORT -> "Short hair"
-        HairStyle.MOHAWK -> "Mohawk"
-        HairStyle.AFRO -> "Afro"
         HairStyle.SIDE_PART -> "Side parting"
-        HairStyle.FLAT_TOP -> "Flat top"
-        HairStyle.BOB -> "Bob"
-        HairStyle.BUN -> "Bun"
+        HairStyle.BUZZ -> "Buzz cut"
+        HairStyle.MOHICAN -> "Mohican"
+        HairStyle.CURTAINS -> "Curtains"
+        HairStyle.SPIKY -> "Spiky"
     }
 
     /** Slider position for each editor control's default (size 100%, head 100%). */
