@@ -123,6 +123,21 @@
         android:textStyle="bold" />
 
     <TextView
+        android:id="@+id/minimise_button"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="66dp"
+        android:layout_marginEnd="10dp"
+        android:background="@drawable/panel_bg"
+        android:contentDescription="Minimise"
+        android:gravity="center"
+        android:text="—"
+        android:textColor="@android:color/white"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+
+    <TextView
         android:id="@+id/version_text"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -268,7 +283,7 @@
                     android:id="@+id/edit_width_label"
                     android:layout_width="110dp"
                     android:layout_height="wrap_content"
-                    android:text="Face ←→"
+                    android:text="Head width"
                     android:textColor="@android:color/white"
                     android:textSize="13sp" />
 
@@ -291,7 +306,7 @@
                     android:id="@+id/edit_height_label"
                     android:layout_width="110dp"
                     android:layout_height="wrap_content"
-                    android:text="Face ↑↓"
+                    android:text="Head height"
                     android:textColor="@android:color/white"
                     android:textSize="13sp" />
 
@@ -314,7 +329,7 @@
                     android:id="@+id/edit_depth_label"
                     android:layout_width="110dp"
                     android:layout_height="wrap_content"
-                    android:text="Face in/out"
+                    android:text="Head depth"
                     android:textColor="@android:color/white"
                     android:textSize="13sp" />
 

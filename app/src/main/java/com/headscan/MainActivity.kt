@@ -128,14 +128,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private lateinit var editPanel: View
     private lateinit var editBars: List<SeekBar>
     private var shapeSize = 1f
-    private val faceOffset = floatArrayOf(0f, 0f, 0f)        // face position on the head: X (right), Y (up), Z (forward), metres
+    private val headScale = floatArrayOf(1f, 1f, 1f)        // generic head size around the face: width, height, depth
+    private var minimised = false
     private var editHair = HairStyle.BUZZ
     private var editDirty = false
     private var suppressEditEvents = false
     private lateinit var applyButton: Button
     private lateinit var editHairGroup: View
     private lateinit var editHairSpinner: android.widget.Spinner
-    // Kept after processing so the preview can rebuild the selfie head with new face position / hair.
+    // Kept after processing so the preview can rebuild the selfie head with new head size / hair.
     private var selfieInput: Triple<List<Keyframe>, FloatArray, IntArray>? = null
     private var lastSettings = ScanSettings()
     // Hair colour sliders (preview): null hue = natural colour from the photos; tone -1..1.
@@ -174,6 +175,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         setupShapeEditor()
         setupHairColorSliders()
         findViewById<View>(R.id.settings_button).setOnClickListener { showSettings() }
+        findViewById<TextView>(R.id.minimise_button).setOnClickListener { v -> setMinimised(!minimised, v as TextView) }
 
         selfieMode = prefs.getBoolean("selfie", false)
         targetTriangles = prefs.getInt("triangles", LOW_TRIANGLES)
@@ -656,12 +658,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         RgbImage(bmp.width, bmp.height, px).also { bmp.recycle() }
     }
 
-    /** Rebuilds the selfie head with the face position and hairstyle chosen in the preview. */
+    /** Rebuilds the selfie head with the head size and hairstyle chosen in the preview. */
     private fun applyEdits() {
         val input = selfieInput ?: return
         val settings = lastSettings.copy(
             hairStyle = editHair,
-            faceOffsetX = faceOffset[0], faceOffsetY = faceOffset[1], faceOffsetZ = faceOffset[2],
+            headScaleX = headScale[0], headScaleY = headScale[1], headScaleZ = headScale[2],
         )
         state = State.PROCESSING
         actionButton.isEnabled = false
@@ -738,7 +740,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    /** Preview editor: size (live), face position on the head and hairstyle (Selfie mode, rebuilt with Apply). */
+    /** Preview editor: size (live), head width / height / depth around the face and hairstyle (Selfie mode, rebuilt live). */
     private fun setupShapeEditor() {
         editPanel = findViewById(R.id.edit_panel)
         applyButton = findViewById(R.id.edit_apply)
@@ -746,11 +748,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         editHairSpinner = findViewById(R.id.edit_hair_spinner)
         val ids = listOf(R.id.edit_size, R.id.edit_width, R.id.edit_height, R.id.edit_depth)
         val labels = listOf(R.id.edit_size_label, R.id.edit_width_label, R.id.edit_height_label, R.id.edit_depth_label)
-        val names = listOf("Size", "Face ←→", "Face ↑↓", "Face in/out")
+        val names = listOf("Size", "Head width", "Head height", "Head depth")
         editBars = ids.map { findViewById(it) }
-        // Face sliders: one step = 1 mm, each on its own full-width row with big − / + buttons either side.
+        // Head size sliders: one step = 1 %, each on its own full-width row with big − / + buttons either side.
         for (k in 1..3) {
-            editBars[k].max = Math.round(2 * FACE_MOVE[k - 1] * 1000)
+            editBars[k].max = HEAD_MAX_PCT - HEAD_MIN_PCT
             enlargeFaceRow(editBars[k], findViewById(labels[k]))
         }
         editBars.forEachIndexed { i, bar ->
@@ -764,9 +766,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                         label.text = "Size ${(shapeSize * 100).toInt()}%"
                         previewView.setTransform(shapeSize, 0f, 0f, 0f)
                     } else {
-                        faceOffset[i - 1] = t * FACE_MOVE[i - 1]
-                        val mm = Math.round(faceOffset[i - 1] * 1000)
-                        label.text = "${names[i]} ${if (mm > 0) "+" else ""}$mm mm"
+                        val pct = HEAD_MIN_PCT + progress
+                        headScale[i - 1] = pct / 100f
+                        label.text = "${names[i]} $pct%"
                         if (!suppressEditEvents) markDirty()
                     }
                 }
@@ -947,14 +949,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         HairStyle.BUN -> "Bun"
     }
 
-    /** Slider position for each editor control's default (face starts [DEFAULT_FACE_Z] in). */
-    private fun defaultProgress(k: Int): Int {
-        if (k == 0) return 50
-        val half = editBars[k].max / 2
-        return if (k == 3) half + Math.round(DEFAULT_FACE_Z * 1000) else half
-    }
+    /** Slider position for each editor control's default (size 100%, head 100%). */
+    private fun defaultProgress(k: Int): Int = if (k == 0) 50 else 100 - HEAD_MIN_PCT
 
-    /** A face position or hairstyle change: rebuild the head shortly after the slider stops, no Apply needed. */
+    /** A head size or hairstyle change: rebuild the head shortly after the slider stops, no Apply needed. */
     private fun markDirty() {
         editDirty = true
         if (state != State.PREVIEW || selfieInput == null) return
@@ -974,7 +972,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val input = selfieInput ?: return
         val settings = lastSettings.copy(
             hairStyle = editHair,
-            faceOffsetX = faceOffset[0], faceOffsetY = faceOffset[1], faceOffsetZ = faceOffset[2],
+            headScaleX = headScale[0], headScaleY = headScale[1], headScaleZ = headScale[2],
         )
         editDirty = false
         actionButton.isEnabled = false
@@ -1110,7 +1108,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         editDirty = false
         applyButton.isEnabled = false
         val selfieEdits = selfieInput != null
-        for (k in 1..3) (editBars[k].parent as View).visibility = if (selfieEdits) View.VISIBLE else View.GONE
+        applyMinimisedSliders()
         editHairGroup.visibility = if (selfieEdits) View.VISIBLE else View.GONE
         applyButton.visibility = View.GONE   // edits apply live
         editPanel.visibility = View.VISIBLE
@@ -1223,6 +1221,28 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private fun showStatus(text: String) { statusText.text = text }
 
+    /** Minimise: instructions shrink to one line and the size sliders fold away, leaving more of the view free. */
+    private fun setMinimised(on: Boolean, button: TextView) {
+        minimised = on
+        button.text = if (on) "+" else "—"
+        button.contentDescription = if (on) "Expand" else "Minimise"
+        statusText.maxLines = if (on) 1 else Int.MAX_VALUE
+        statusText.ellipsize = if (on) android.text.TextUtils.TruncateAt.END else null
+        statusText.textSize = if (on) 13f else 16f
+        applyMinimisedSliders()
+    }
+
+    private fun applyMinimisedSliders() {
+        if (!::editBars.isInitialized) return
+        editBars.forEachIndexed { k, b ->
+            // Each slider sits in its own row (the head rows hold an inner line with the − / + buttons).
+            var row = b.parent as View
+            if (row.parent !== editPanel) row = row.parent as View
+            val show = !minimised && (k == 0 || selfieInput != null)   // head size: Selfie mode only
+            row.visibility = if (show) View.VISIBLE else View.GONE
+        }
+    }
+
     private fun showFatal(text: String) {
         statusText.text = text
         actionButton.isEnabled = false
@@ -1244,7 +1264,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val HUE_PHOTO_END = 0.03f
         private const val HUE_NATURAL_END = 0.5f
         private const val START_RETRY_MS = 4000L
-        private val FACE_MOVE = floatArrayOf(0.02f, 0.03f, 0.04f)
+        /** Head size slider range, percent of the default generic head. */
+        private const val HEAD_MIN_PCT = 70
+        private const val HEAD_MAX_PCT = 110
         /** New selfie heads start with the face 20 mm in. */
         private const val DEFAULT_FACE_Z = -0.02f
         private const val LOW_TRIANGLES = 1500

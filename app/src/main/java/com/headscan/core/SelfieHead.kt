@@ -24,11 +24,17 @@ class SelfieHead(
     val hairStyle: HairStyle = HairStyle.BUZZ,
     /** Moves the face relative to the generic head (metres, +X right, +Y up, +Z forward). */
     faceOffset: FloatArray = FloatArray(3),
+    /**
+     * Scales the generic head (skull, hair, ears, neck) without touching the scanned face: X = width, Y = height,
+     * Z = depth. Height shrinks about the middle of the face, depth pulls the back of the head forward.
+     */
+    headScale: FloatArray = floatArrayOf(1f, 1f, 1f),
 ) {
     private val verts = faceVertices
 
     val minX: Float; val maxX: Float; val minY: Float; val maxY: Float; val noseZ: Float
     private val faceW: Float
+    private val widthScale: Float
 
     // Generic head parameters
     val headCx: Float
@@ -68,13 +74,17 @@ class SelfieHead(
         val jawLine = minY + 0.025f * scale
         // Moving the face by +offset on the head = moving the head by -offset around the face.
         val ox = faceOffset[0]; val oy = faceOffset[1]; val oz = faceOffset[2]
+        val sx = headScale[0]; val sy = headScale[1]; val sz = headScale[2]
         headCx = -ox
         headCy = (topOfHead + jawLine) / 2 - oy
-        ry = (topOfHead - jawLine) / 2
-        rx = faceW / 2 * 1.05f
-        rz = 0.10f * scale
-        headCz = noseZ - 0.025f * scale - rz - oz
-        neckR = 0.056f * scale
+        ry = (topOfHead - jawLine) / 2 * sy
+        rx = faceW / 2 * 1.05f * sx
+        val rz0 = 0.10f * scale
+        rz = rz0 * sz
+        // Keep the front of the skull where it was so the face stays put; the back of the head comes forward.
+        headCz = noseZ - 0.025f * scale - rz0 - oz + (rz0 - rz)
+        neckR = 0.056f * scale * (sx + sz) / 2
+        widthScale = sx
         neckCz = headCz - 0.012f * scale
         neckBottom = minY - 0.10f * scale - oy
 
@@ -213,7 +223,7 @@ class SelfieHead(
         var head = smin(cranium, occ, 0.01f)
         // Jaw: from the chin back to the angle of the jaw below each ear.
         val chinX = (minX + maxX) / 2; val chinY = minY + 0.03f * sc; val chinZ = noseZ - 0.07f * sc
-        val gonY = earY - 0.06f * sc; val gonZ = earZ + 0.024f * sc; val gonX = 0.05f * sc
+        val gonY = earY - 0.06f * sc; val gonZ = earZ + 0.024f * sc; val gonX = 0.05f * sc * widthScale
         val jawL = capsule(x, y, z, chinX, chinY, chinZ, headCx - gonX, gonY, gonZ, 0.014f * sc, 0.012f * sc)
         val jawR = capsule(x, y, z, chinX, chinY, chinZ, headCx + gonX, gonY, gonZ, 0.014f * sc, 0.012f * sc)
         head = smin(head, min(jawL, jawR), 0.01f * sc)
