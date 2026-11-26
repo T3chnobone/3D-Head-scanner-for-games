@@ -29,10 +29,8 @@ data class ScanSettings(
     val faceOffsetX: Float = 0f,
     val faceOffsetY: Float = 0f,
     val faceOffsetZ: Float = 0f,
-    /** Selfie mode only: size of the generic head around the face (1 = default), width / height / depth. */
-    val headScaleX: Float = 1f,
-    val headScaleY: Float = 1f,
-    val headScaleZ: Float = 1f,
+    /** Selfie mode only: skull measured from the photos (null = measure it if outlines are given, else average). */
+    val headShape: HeadShape? = null,
 )
 
 /** Visual style of the generated head. */
@@ -62,6 +60,11 @@ class ScanResult(
      * faceted but eyes and lips stay smooth. Null = all faces follow [flatShaded]. [normals] are per vertex then.
      */
     val smoothFaces: BooleanArray? = null,
+    /** Selfie mode: the skull used (measured or average), and how it was measured (null = average proportions). */
+    val headShape: HeadShape? = null,
+    val headFit: HeadFit.Result? = null,
+    /** Selfie mode: head width / height (top to chin) / depth (nose to back), metres. */
+    val headSize: FloatArray? = null,
 ) {
     val canRecolorHair get() = hairMask != null
 
@@ -69,7 +72,7 @@ class ScanResult(
     fun withHairColor(hue: Float?, tone: Float): ScanResult {
         val mask = hairMask ?: return this
         return ScanResult(mesh, normals, flatShaded, atlas, HairColor.recolor(texture, mask, hairBase, hue, tone),
-            textureSize, hairMask, hairBase, smoothFaces)
+            textureSize, hairMask, hairBase, smoothFaces, headShape, headFit, headSize)
     }
 
     val triangleCount get() = mesh.faceCount
@@ -92,7 +95,7 @@ class ScanResult(
         }
         val m = Mesh(p, mesh.faces)
         val n = if (flatShaded) MeshOps.faceNormals(m) else MeshOps.vertexNormals(m)
-        return ScanResult(m, n, flatShaded, atlas, texture, textureSize, hairMask, hairBase, smoothFaces)
+        return ScanResult(m, n, flatShaded, atlas, texture, textureSize, hairMask, hairBase, smoothFaces, headShape, headFit, headSize)
     }
 
     /** Un-indexed triangle arrays for real-time preview: xyz, normal, texture st (t = 0 at the top row). */
@@ -162,15 +165,31 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         faceTriangles: IntArray,
         colorSource: ColorSource,
         progress: (String, Float) -> Unit = { _, _ -> },
+        /** The person's outline in the photos, for measuring the head (see [HeadFit]). */
+        silhouettes: List<SilhouetteView>? = null,
     ): ScanResult {
         if (keyframes.size < 3) throw ScanException("Need at least 3 captured views, got ${keyframes.size}.")
         progress("Fitting head to your face", 0.05f)
+        var shape = settings.headShape
+        var fitNote: HeadFit.Result? = null
+        if (shape == null && silhouettes != null && silhouettes.isNotEmpty()) {
+            progress("Measuring your head from the photos", 0.07f)
+            val avg = SelfieHead(faceVertices, faceTriangles, HairStyle.NONE, floatArrayOf(settings.faceOffsetX, settings.faceOffsetY, settings.faceOffsetZ))
+            val start = HeadShape(avg.rx, avg.headCy + avg.ry, avg.headCz + avg.rz, avg.headCz - avg.rz)
+            fitNote = try { HeadFit.fit(silhouettes, faceVertices, faceTriangles, start, avg.headCy, avg.minY, avg.maxY) } catch (e: Throwable) { null }
+            shape = fitNote?.shape
+        }
         val head = SelfieHead(faceVertices, faceTriangles, settings.hairStyle,
             floatArrayOf(settings.faceOffsetX, settings.faceOffsetY, settings.faceOffsetZ),
-            floatArrayOf(settings.headScaleX, settings.headScaleY, settings.headScaleZ))
+            shape)
         val vol = head.buildVolume(0.003f, 0.012f)
         val hair = HairFill(head)
-        return finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource, hair, crop = false, progress, smoothing = 3)
+        val r = finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource, hair, crop = false, progress, smoothing = 3)
+        val used = HeadShape(head.rx, head.headCy + head.ry, head.headCz + head.rz, head.headCz - head.rz)
+        val size = floatArrayOf(2 * head.rx, used.top - head.minY, head.noseZ - used.zBack)
+        val fit = fitNote
+        return ScanResult(r.mesh, r.normals, r.flatShaded, r.atlas, r.texture, r.textureSize, r.hairMask, r.hairBase, r.smoothFaces,
+            used, fit, size)
     }
 
     /**

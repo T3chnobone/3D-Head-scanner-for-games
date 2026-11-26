@@ -128,7 +128,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private lateinit var editPanel: View
     private lateinit var editBars: List<SeekBar>
     private var shapeSize = 1f
-    private val headScale = floatArrayOf(1f, 1f, 1f)        // generic head size around the face: width, height, depth
+    private var lastFit: com.headscan.core.HeadFit.Result? = null
+    private var rearInput: Pair<List<Keyframe>, FloatArray>? = null      // kept so the preview can rebuild a rear scan
+    private lateinit var editGoldenEye: android.widget.Switch
     private var minimised = false
     private var editHair = HairStyle.BUZZ
     private var editDirty = false
@@ -627,6 +629,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     if (detail != null) frames.add(detail) else detailNote = " (sharp photo skipped: it didn't line up)"
                 }
                 selfieInput = if (isSelfie && faceVerts != null && faceTris != null) Triple(frames, faceVerts, faceTris) else null
+                rearInput = if (!isSelfie) Pair(frames, center) else null
+                // Selfie mode: the person's outline in each photo, to measure the head.
+                val outlines = if (isSelfie) {
+                    runOnUiThread { showStatus("Measuring your head from the photos…") }
+                    try { Silhouettes.compute(frames.filter { it.priority <= 1f }) } catch (e: Throwable) { null }
+                } else null
                 val colorSource = photoSource()
                 val onProgress = { msg: String, p: Float ->
                     runOnUiThread { showStatus("Building 3D model$detailNote…\n$msg"); progressBar.progress = (p * 100).toInt() }
@@ -634,13 +642,18 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 val pipeline = HeadScanPipeline(settings)
                 val result = if (isSelfie) {
                     if (faceVerts == null || faceTris == null) throw ScanException("No face mesh was captured.")
-                    pipeline.runSelfie(frames, faceVerts, faceTris, colorSource, onProgress)
+                    pipeline.runSelfie(frames, faceVerts, faceTris, colorSource, onProgress, silhouettes = outlines)
                 } else {
                     pipeline.run(frames, center, colorSource, onProgress)
                 }
                 // Selfie mode: also save a photo with the face mesh drawn on it, to check the texture lines up.
                 val check = if (isSelfie && faceVerts != null) AlignmentCheck.draw(frames.first(), faceVerts) else null
-                withContext(Dispatchers.Main) { enterPreview(result, check, fresh = true) }
+                withContext(Dispatchers.Main) {
+                    // Keep the measured head for rebuilds (hairstyle, style), so it isn't measured again.
+                    lastSettings = settings.copy(headShape = result.headShape)
+                    lastFit = result.headFit
+                    enterPreview(result, check, fresh = true)
+                }
             } catch (e: Throwable) {
                 withContext(Dispatchers.Main) {
                     savedUris = emptyList()
@@ -663,7 +676,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val input = selfieInput ?: return
         val settings = lastSettings.copy(
             hairStyle = editHair,
-            headScaleX = headScale[0], headScaleY = headScale[1], headScaleZ = headScale[2],
+            style = headStyle,
         )
         state = State.PROCESSING
         actionButton.isEnabled = false
@@ -740,106 +753,42 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    /** Preview editor: size (live), head width / height / depth around the face and hairstyle (Selfie mode, rebuilt live). */
+    /** Preview editor: size (live), GoldenEye / realistic style and hairstyle; the head rebuilds by itself. */
     private fun setupShapeEditor() {
         editPanel = findViewById(R.id.edit_panel)
         applyButton = findViewById(R.id.edit_apply)
         editHairGroup = findViewById(R.id.edit_hair_group)
         editHairSpinner = findViewById(R.id.edit_hair_spinner)
-        val ids = listOf(R.id.edit_size, R.id.edit_width, R.id.edit_height, R.id.edit_depth)
-        val labels = listOf(R.id.edit_size_label, R.id.edit_width_label, R.id.edit_height_label, R.id.edit_depth_label)
-        val names = listOf("Size", "Head width", "Head height", "Head depth")
-        editBars = ids.map { findViewById(it) }
-        // Head size sliders: one step = 1 %, each on its own full-width row with big − / + buttons either side.
-        for (k in 1..3) {
-            editBars[k].max = HEAD_MAX_PCT - HEAD_MIN_PCT
-            enlargeFaceRow(editBars[k], findViewById(labels[k]))
+        editGoldenEye = findViewById(R.id.edit_goldeneye)
+        editBars = listOf(findViewById(R.id.edit_size))
+        val label = findViewById<TextView>(R.id.edit_size_label)
+        editBars[0].setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                val t = (progress - 50) / 50f
+                shapeSize = 1f + t * 0.5f            // 50%..150%
+                label.text = "Size ${(shapeSize * 100).toInt()}%"
+                previewView.setTransform(shapeSize, 0f, 0f, 0f)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
+        editGoldenEye.setOnCheckedChangeListener { _, on ->
+            val style = if (on) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
+            if (style != headStyle) {
+                headStyle = style
+                prefs.edit().putString("style", headStyle.name).apply()
+                if (!suppressEditEvents) markDirty()
+            }
         }
-        editBars.forEachIndexed { i, bar ->
-            val label = findViewById<TextView>(labels[i])
-            bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                    val half = sb.max / 2f
-                    val t = (progress - half) / half          // -1..1
-                    if (i == 0) {
-                        shapeSize = 1f + t * 0.5f            // 50%..150%
-                        label.text = "Size ${(shapeSize * 100).toInt()}%"
-                        previewView.setTransform(shapeSize, 0f, 0f, 0f)
-                    } else {
-                        val pct = HEAD_MIN_PCT + progress
-                        headScale[i - 1] = pct / 100f
-                        label.text = "${names[i]} $pct%"
-                        if (!suppressEditEvents) markDirty()
-                    }
-                }
-                override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) {}
-            })
-        }
-        setupHairSpinner(editHairSpinner, HairStyle.BUZZ) { h ->
+        setupHairSpinner(editHairSpinner, HairStyle.SIDE_PART) { h ->
             if (h != editHair) {
                 editHair = h
                 if (!suppressEditEvents) markDirty()
             }
         }
         applyButton.setOnClickListener { applyEdits() }
-        findViewById<View>(R.id.edit_reset).setOnClickListener {
-            editBars[0].progress = 50
-            for (k in 1..3) editBars[k].progress = defaultProgress(k)
-        }
-    }
-
-    /**
-     * Rebuilds a face slider row as: label on top, then [−] slider [+] filling the width.
-     * Tapping − / + moves the face 1 mm; holding keeps moving it.
-     */
-    private fun enlargeFaceRow(bar: SeekBar, label: TextView) {
-        val row = bar.parent as android.widget.LinearLayout
-        val d = resources.displayMetrics.density
-        row.removeView(bar)
-        row.orientation = android.widget.LinearLayout.VERTICAL
-        label.layoutParams = android.widget.LinearLayout.LayoutParams(
-            android.widget.LinearLayout.LayoutParams.MATCH_PARENT, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT)
-        label.setPadding(0, (6 * d).toInt(), 0, 0)
-        val line = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-        }
-        fun stepButton(text: String, delta: Int) = Button(this).apply {
-            this.text = text
-            textSize = 22f
-            minWidth = 0; minimumWidth = 0
-            setPadding(0, 0, 0, 0)
-            layoutParams = android.widget.LinearLayout.LayoutParams((56 * d).toInt(), (48 * d).toInt())
-            val repeat = object : Runnable {
-                override fun run() {
-                    bar.progress = (bar.progress + delta).coerceIn(0, bar.max)
-                    postDelayed(this, 90)
-                }
-            }
-            setOnTouchListener { v, ev ->
-                when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> {
-                        bar.progress = (bar.progress + delta).coerceIn(0, bar.max)
-                        v.isPressed = true
-                        v.postDelayed(repeat, 450)
-                    }
-                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                        v.isPressed = false
-                        v.removeCallbacks(repeat)
-                        if (ev.actionMasked == android.view.MotionEvent.ACTION_UP) v.performClick()
-                    }
-                }
-                true
-            }
-        }
-        bar.layoutParams = android.widget.LinearLayout.LayoutParams(0, (48 * d).toInt(), 1f)
-        bar.setPadding((16 * d).toInt(), 0, (16 * d).toInt(), 0)
-        line.addView(stepButton("−", -1))
-        line.addView(bar)
-        line.addView(stepButton("+", +1))
-        row.addView(line)
-        resetShape(HairStyle.BUZZ)
+        findViewById<View>(R.id.edit_reset).setOnClickListener { editBars[0].progress = 50 }
+        resetShape(HairStyle.SIDE_PART)
     }
 
     /** The two vertical sliders at the side of the preview: hair colour (rainbow) and tone (dark to light). */
@@ -936,13 +885,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         HairStyle.SPIKY -> "Spiky"
     }
 
-    /** Slider position for each editor control's default (size 100%, head 100%). */
-    private fun defaultProgress(k: Int): Int = if (k == 0) 50 else 100 - HEAD_MIN_PCT
+    private fun defaultProgress(@Suppress("UNUSED_PARAMETER") k: Int): Int = 50
 
     /** A head size or hairstyle change: rebuild the head shortly after the slider stops, no Apply needed. */
     private fun markDirty() {
         editDirty = true
-        if (state != State.PREVIEW || selfieInput == null) return
+        if (state != State.PREVIEW || (selfieInput == null && rearInput == null)) return
         actionButton.isEnabled = false
         statusText.removeCallbacks(liveRebuild)
         statusText.postDelayed(liveRebuild, 300)
@@ -956,10 +904,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private fun startLiveRebuild() {
         if (state != State.PREVIEW) return
         if (rebuildJob != null) { rebuildQueued = true; return }
-        val input = selfieInput ?: return
+        val input = selfieInput
+        val rear = rearInput
+        if (input == null && rear == null) return
         val settings = lastSettings.copy(
             hairStyle = editHair,
-            headScaleX = headScale[0], headScaleY = headScale[1], headScaleZ = headScale[2],
+            style = headStyle,
         )
         editDirty = false
         actionButton.isEnabled = false
@@ -968,9 +918,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         rebuildJob = lifecycleScope.launch(Dispatchers.Default) {
             var error: String? = null
             try {
-                val result = HeadScanPipeline(settings).runSelfie(input.first, input.second, input.third, photoSource()) { msg, p ->
+                val onProgress = { msg: String, p: Float ->
                     runOnUiThread { if (state == State.PREVIEW) { showStatus("Updating head…\n$msg"); progressBar.progress = (p * 100).toInt() } }
                 }
+                val result = if (input != null) HeadScanPipeline(settings).runSelfie(input.first, input.second, input.third, photoSource(), onProgress)
+                    else HeadScanPipeline(settings).run(rear!!.first, rear.second, photoSource(), onProgress)
                 withContext(Dispatchers.Main) {
                     if (state == State.PREVIEW) {
                         lastSettings = settings
@@ -1005,6 +957,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         editBars.forEachIndexed { k, b -> b.progress = defaultProgress(k) + 1; b.progress = defaultProgress(k) }   // force change events so labels update
         editHair = hair
         editHairSpinner.setSelection(HairStyle.values().indexOf(hair))
+        editGoldenEye.isChecked = headStyle == HeadStyle.GOLDENEYE_SOURCE
         suppressEditEvents = false
         editDirty = false
         applyButton.isEnabled = false
@@ -1024,14 +977,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val root = findViewById<View>(R.id.root)
         val bottomPanel = findViewById<View>(R.id.bottom_panel)
         val version = findViewById<View>(R.id.version_text)
+        val topPanel = findViewById<View>(R.id.top_panel)
         val base = (16 * resources.displayMetrics.density).toInt()
         val versionBase = (version.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            (statusText.layoutParams as ViewGroup.MarginLayoutParams).topMargin = base + bars.top
+            (topPanel.layoutParams as ViewGroup.MarginLayoutParams).topMargin = base + bars.top
             (bottomPanel.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin = base + bars.bottom
             (version.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin = versionBase + bars.bottom
-            statusText.requestLayout(); bottomPanel.requestLayout(); version.requestLayout()
+            topPanel.requestLayout(); bottomPanel.requestLayout(); version.requestLayout()
             insets
         }
     }
@@ -1135,7 +1089,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         box.addView(styles)
 
         box.addView(TextView(this).apply {
-            text = "Settings apply to the next scan."
+            text = "Also on the preview screen, where it updates the head straight away."
             textSize = 12f
             alpha = 0.7f
             setPadding(0, px(10), 0, 0)
@@ -1146,16 +1100,30 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setPositiveButton("Done") { _, _ ->
                 headStyle = if (styles.checkedRadioButtonId == goldeneye.id) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
                 prefs.edit().putString("style", headStyle.name).apply()
+                if (::editGoldenEye.isInitialized) editGoldenEye.isChecked = headStyle == HeadStyle.GOLDENEYE_SOURCE
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
+    /** "Head 15.4 × 21.0 × 19.6 cm, measured from your photos." (or the average-proportions fallback). */
+    private fun headSizeText(result: ScanResult?): String {
+        val sz = result?.headSize ?: return ""
+        val fit = result.headFit ?: lastFit
+        fun cm(m: Float) = "%.1f".format(m * 100)
+        val dims = "Head ${cm(sz[0])} × ${cm(sz[1])} × ${cm(sz[2])} cm (width × height × depth)"
+        return when {
+            fit != null && fit.depthMeasured -> "$dims, measured from your photos.\n"
+            fit != null -> "$dims, measured from your photos (depth estimated: turn your head further next time).\n"
+            else -> "$dims, average proportions: your outline couldn't be found in the photos (try a plain background).\n"
+        }
+    }
+
     private fun previewText(result: ScanResult?): String {
         val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
         return "Preview · ${result?.triangleCount ?: 0} triangles · ${result?.textureSize ?: 0}px texture · $style\nDrag to spin. " +
-            (if (selfieInput != null) "Move your face on the head or change the hairstyle; the head updates by itself. " +
-                "The side sliders change hair colour and tone. " else "") +
+            (if (selfieInput != null) headSizeText(result) + "Change the hairstyle or style and the head updates by itself. " +
+                "The side sliders change hair colour and tone. " else "Switch GoldenEye style on or off and the head updates by itself. ") +
             "Save it with a name, or discard it."
     }
 
@@ -1183,6 +1151,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         pendingResult = null
         pendingCheck?.recycle(); pendingCheck = null
         selfieInput = null
+        rearInput = null
         previewView.onPause()
         previewView.visibility = View.GONE
         surfaceView.visibility = View.VISIBLE
@@ -1225,7 +1194,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             // Each slider sits in its own row (the head rows hold an inner line with the − / + buttons).
             var row = b.parent as View
             if (row.parent !== editPanel) row = row.parent as View
-            val show = !minimised && (k == 0 || selfieInput != null)   // head size: Selfie mode only
+            val show = !minimised
             row.visibility = if (show) View.VISIBLE else View.GONE
         }
     }
@@ -1251,9 +1220,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val HUE_PHOTO_END = 0.03f
         private const val HUE_NATURAL_END = 0.5f
         private const val START_RETRY_MS = 4000L
-        /** Head size slider range, percent of the default generic head. */
-        private const val HEAD_MIN_PCT = 70
-        private const val HEAD_MAX_PCT = 110
         /** New selfie heads start with the face 20 mm in. */
         private const val DEFAULT_FACE_Z = -0.02f
         private const val LOW_TRIANGLES = 1500

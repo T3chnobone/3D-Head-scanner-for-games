@@ -73,8 +73,8 @@ class SelfieCapture(private val workDir: File, private val saveJpeg: (ByteArray,
             lastMs = now
             val yaw = Math.toDegrees(atan2(dir[0].toDouble(), dir[2].toDouble()))
             val pitch = Math.toDegrees(asin(dir[1].toDouble()))
-            if (yaw < -25) sideA = true
-            if (yaw > 25) sideB = true
+            if (yaw < -35) sideA = true
+            if (yaw > 35) sideB = true
             if (pitch < -12) up = true      // camera below the face = chin up
             if (pitch > 12) down = true
             val bin = ((yaw + 60) / 120 * YAW_BINS).toInt()
@@ -89,8 +89,8 @@ class SelfieCapture(private val workDir: File, private val saveJpeg: (ByteArray,
         val sb = StringBuilder("Captured ${keyframes.size} views\n")
         if (problem != null) return sb.append(problem).toString()
         val missing = ArrayList<String>()
-        if (!sideA) missing.add("turn your head one way")
-        if (!sideB) missing.add("turn it the other way")
+        if (!sideA) missing.add("turn your head well round one way (as far as you can while still seeing the screen)")
+        if (!sideB) missing.add("well round the other way")
         if (!up) missing.add("tilt your chin up")
         if (!down) missing.add("tilt your chin down")
         if (missing.isEmpty()) sb.append("All angles captured. Look straight at the screen and tap Finish – a full-resolution photo is taken then.")

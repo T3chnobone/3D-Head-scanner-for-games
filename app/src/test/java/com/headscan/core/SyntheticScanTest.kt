@@ -211,20 +211,20 @@ class SyntheticScanTest {
     }
 
     @Test
-    fun selfieLowQuality() = selfie(1500)
+    fun selfieLowQuality() { selfie(1500) }
 
     @Test
-    fun selfieHighQuality() = selfie(3500)
+    fun selfieHighQuality() { selfie(3500) }
 
     /** Selfie mode: synthetic ARCore-style face mesh + front-camera photos from a head turning left/right/up/down. */
     @Test
-    fun selfieGoldenEyeStyle() = selfie(1500, HeadStyle.GOLDENEYE_SOURCE)
+    fun selfieGoldenEyeStyle() { selfie(1500, HeadStyle.GOLDENEYE_SOURCE) }
 
     @Test
-    fun selfieShortHair() = selfie(1500, hair = HairStyle.SIDE_PART)
+    fun selfieShortHair() { selfie(1500, hair = HairStyle.SIDE_PART) }
 
     @Test
-    fun selfieLongHair() = selfie(3500, hair = HairStyle.CURTAINS)
+    fun selfieLongHair() { selfie(3500, hair = HairStyle.CURTAINS) }
 
     /** Renders every hairstyle on a skin-coloured synthetic person (build/gallery_*), in the GoldenEye look, for visual review. */
     @Test
@@ -248,16 +248,26 @@ class SyntheticScanTest {
     }
 
     @Test
-    fun selfieFaceMoved() = selfie(1500, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0.015f, -0.02f, 0.02f))
+    fun selfieFaceMoved() { selfie(1500, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0.015f, -0.02f, 0.02f)) }
 
     @Test
-    fun headSizeSliders() {
+    fun headMeasuredFromPhotos() {
         skinMode = true
         try {
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_default")
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_narrow", headScale = floatArrayOf(0.8f, 1f, 1f))
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_short", headScale = floatArrayOf(1f, 0.8f, 1f))
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "hs_shallow", headScale = floatArrayOf(1f, 1f, 0.75f))
+            // Synthetic skull: half width 0.08, top 0.11 above the centre, back 0.10 behind it (no hair).
+            val r = selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "measured", measure = true)
+            val fit = r.headFit
+            assertTrue(fit != null, "head measured")
+            val sh = fit.shape
+            println("Measured: rx=%.3f top=%.3f front=%.3f back=%.3f mismatch=%.3f views=%d depth=%s size=%s".format(
+                sh.rx, sh.top, sh.zFront, sh.zBack, fit.mismatch, fit.viewsUsed, fit.depthMeasured, r.headSize!!.joinToString { "%.3f".format(it) }))
+            assertTrue(sh.rx in 0.07f..0.09f, "width")
+            assertTrue(sh.top in 0.09f..0.12f, "top")
+            assertTrue(sh.zBack in -0.115f..-0.08f, "back")
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.SIDE_PART, offset = floatArrayOf(0f, 0f, -0.02f), outName = "unmeasured")
+            // A failed cut-out falls back to average proportions.
+            val bad = selfie(1500, hair = HairStyle.NONE, offset = floatArrayOf(0f, 0f, -0.02f), outName = "measure_failed", measure = true, emptyMasks = true)
+            assertTrue(bad.headFit == null, "fallback")
         } finally { skinMode = false; images.clear() }
     }
 
@@ -274,7 +284,7 @@ class SyntheticScanTest {
     }
 
     fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3), outName: String? = null,
-               recolor: Pair<Float?, Float>? = null, wideFace: Boolean = false, headScale: FloatArray = floatArrayOf(1f, 1f, 1f)) {
+               recolor: Pair<Float?, Float>? = null, wideFace: Boolean = false, measure: Boolean = false, emptyMasks: Boolean = false): ScanResult {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
@@ -307,10 +317,22 @@ class SyntheticScanTest {
             val m = world.camToWorld.copyOf(); m[12] -= c[0]; m[13] -= c[1]; m[14] -= c[2]
             kfs.add(Keyframe(m, invertRigid(m), ShortArray(1), 1, 1, world.depthIntrinsics.scaledTo(1, 1), world.colorIntrinsics, world.colorRef))
         }
+        // The person's outline in each photo (what the phone gets from the person cut-out), at 160 x 120.
+        val sil = if (!measure) null else kfs.map { kf ->
+            val img = images[kf.colorRef]!!
+            val w = 160; val h = 120
+            val mask = ByteArray(w * h) { k ->
+                if (emptyMasks) 0 else {
+                    val u = (k % w) * img.width / w + 2; val v = (k / w) * img.height / h + 2
+                    if (img.argb[v * img.width + u] != 0xFF202020.toInt()) 1 else 0
+                }
+            }
+            SilhouetteView(mask, w, h, kf.colorIntrinsics.scaledTo(w, h), kf.worldToCam)
+        }
         val res0 = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair,
             faceOffsetX = offset[0], faceOffsetY = offset[1], faceOffsetZ = offset[2],
-            headScaleX = headScale[0], headScaleY = headScale[1], headScaleZ = headScale[2])).runSelfie(
-            kfs, fv, tris.toIntArray(), { images[it.colorRef]!! },
+        )).runSelfie(
+            kfs, fv, tris.toIntArray(), { images[it.colorRef]!! }, silhouettes = sil,
         )
         var res = res0
         if (recolor != null) {
@@ -342,5 +364,6 @@ class SyntheticScanTest {
         }
         val (pos, nrm, st) = res.previewArrays()
         assertTrue(pos.size == res.triangleCount * 9 && nrm.size == pos.size && st.size == res.triangleCount * 6)
+        return res
     }
 }

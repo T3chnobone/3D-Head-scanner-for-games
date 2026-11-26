@@ -11,8 +11,8 @@ android {
         applicationId = "com.headscan"
         minSdk = 24
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.21"
+        versionCode = 22
+        versionName = "0.22"
     }
 
     buildTypes {
@@ -46,6 +46,8 @@ dependencies {
     implementation("androidx.camera:camera-core:1.4.1")
     implementation("androidx.camera:camera-camera2:1.4.1")
     implementation("androidx.camera:camera-lifecycle:1.4.1")
+    // On-device person cut-out (Selfie mode head measuring); the model is bundled, no network needed.
+    implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.0.21")

@@ -24,11 +24,8 @@ class SelfieHead(
     val hairStyle: HairStyle = HairStyle.BUZZ,
     /** Moves the face relative to the generic head (metres, +X right, +Y up, +Z forward). */
     faceOffset: FloatArray = FloatArray(3),
-    /**
-     * Scales the generic head (skull, hair, ears, neck) without touching the scanned face: X = width, Y = height,
-     * Z = depth. Height shrinks about the middle of the face, depth pulls the back of the head forward.
-     */
-    headScale: FloatArray = floatArrayOf(1f, 1f, 1f),
+    /** The skull measured from the photos (see [HeadFit]); null = average proportions for the face size. */
+    shape: HeadShape? = null,
 ) {
     private val verts = faceVertices
 
@@ -40,7 +37,7 @@ class SelfieHead(
     val headCx: Float
     val headCy: Float
     val headCz: Float
-    private val rx: Float; private val ry: Float; private val rz: Float
+    val rx: Float; val ry: Float; val rz: Float
     private val neckR: Float
     private val neckCz: Float
     val neckBottom: Float
@@ -74,17 +71,25 @@ class SelfieHead(
         val jawLine = minY + 0.025f * scale
         // Moving the face by +offset on the head = moving the head by -offset around the face.
         val ox = faceOffset[0]; val oy = faceOffset[1]; val oz = faceOffset[2]
-        val sx = headScale[0]; val sy = headScale[1]; val sz = headScale[2]
-        headCx = -ox
-        headCy = (topOfHead + jawLine) / 2 - oy
-        ry = (topOfHead - jawLine) / 2 * sy
-        rx = faceW / 2 * 1.05f * sx
+        val rx0 = faceW / 2 * 1.05f
         val rz0 = 0.10f * scale
-        rz = rz0 * sz
-        // Keep the front of the skull where it was so the face stays put; the back of the head comes forward.
-        headCz = noseZ - 0.025f * scale - rz0 - oz + (rz0 - rz)
-        neckR = 0.056f * scale * (sx + sz) / 2
-        widthScale = sx
+        headCx = -ox
+        if (shape == null) {
+            headCy = (topOfHead + jawLine) / 2 - oy
+            ry = (topOfHead - jawLine) / 2
+            rx = rx0
+            rz = rz0
+            headCz = noseZ - 0.025f * scale - rz0 - oz
+        } else {
+            // The bottom of the skull stays at the jaw; top, width, front and back come from the measurement.
+            headCy = (shape.top + jawLine - oy) / 2
+            ry = (shape.top - (jawLine - oy)) / 2
+            rx = shape.rx
+            rz = (shape.zFront - shape.zBack) / 2
+            headCz = (shape.zFront + shape.zBack) / 2
+        }
+        widthScale = (rx / rx0).coerceIn(0.7f, 1.4f)
+        neckR = 0.056f * scale * ((widthScale + (rz / rz0).coerceIn(0.7f, 1.4f)) / 2)
         neckCz = headCz - 0.012f * scale
         neckBottom = minY - 0.10f * scale - oy
 
