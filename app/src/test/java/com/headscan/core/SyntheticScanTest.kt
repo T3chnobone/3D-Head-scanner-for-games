@@ -280,8 +280,7 @@ class SyntheticScanTest {
         skinMode = true
         try {
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.NONE, outName = "opt_nohair")
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_face0", faceCapture = 0f)
-            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_face50", faceCapture = 0.5f)
+            selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.BUZZ, outName = "opt_wideface", wideFace = true)
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_auburn", recolor = HairColor.NATURAL + 0.36f to 0f)
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_blonde", recolor = HairColor.NATURAL + 0.75f to 0f)
             selfie(1500, style = HeadStyle.GOLDENEYE_SOURCE, hair = HairStyle.CLASSIC_PART, outName = "opt_grey", recolor = HairColor.NATURAL + 0.92f to 0f)
@@ -289,12 +288,12 @@ class SyntheticScanTest {
     }
 
     fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3), outName: String? = null,
-               recolor: Pair<Float?, Float>? = null, faceCapture: Float = 1f) {
+               recolor: Pair<Float?, Float>? = null, wideFace: Boolean = false) {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
         for (j in 0 until gy) for (i in 0 until gx) {
-            val x = -0.065f + 0.13f * i / (gx - 1)
+            val x = (if (wideFace) -0.085f else -0.065f) + (if (wideFace) 0.17f else 0.13f) * i / (gx - 1)
             val y = -0.105f + 0.17f * j / (gy - 1)
             val t = march(c[0] + x, c[1] + y, c[2] + 0.3f, 0f, 0f, -1f)
             val z = if (t > 0) 0.3f - t else 0f
@@ -303,10 +302,13 @@ class SyntheticScanTest {
         }
         val tris = ArrayList<Int>()
         // Keep an oval face region, like the real ARCore face mask.
-        fun inFace(k: Int) = (fv[3 * k] / 0.068f).pow(2) + ((fv[3 * k + 1] + 0.02f) / 0.09f).pow(2) <= 1f
+        // wideFace: the mesh wraps round the sides of the face like a real ARCore mesh (steep border triangles).
+        val fax = if (wideFace) 0.085f else 0.068f
+        fun inFace(k: Int) = (fv[3 * k] / fax).pow(2) + ((fv[3 * k + 1] + 0.02f) / 0.09f).pow(2) <= 1f
         for (j in 0 until gy - 1) for (i in 0 until gx - 1) {
             val a = j * gx + i; val b = a + 1; val d = a + gx; val e = d + 1
-            if (inFace(a) && inFace(b) && inFace(d) && inFace(e)) tris.addAll(listOf(a, b, e, a, e, d))
+            fun hit(k: Int) = fv[3 * k + 2] != 0f
+            if (inFace(a) && inFace(b) && inFace(d) && inFace(e) && hit(a) && hit(b) && hit(d) && hit(e)) tris.addAll(listOf(a, b, e, a, e, d))
         }
         val kfs = ArrayList<Keyframe>()
         var n = 0
@@ -320,7 +322,7 @@ class SyntheticScanTest {
             kfs.add(Keyframe(m, invertRigid(m), ShortArray(1), 1, 1, world.depthIntrinsics.scaledTo(1, 1), world.colorIntrinsics, world.colorRef))
         }
         val res0 = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair,
-            faceOffsetX = offset[0], faceOffsetY = offset[1], faceOffsetZ = offset[2], faceCapture = faceCapture)).runSelfie(
+            faceOffsetX = offset[0], faceOffsetY = offset[1], faceOffsetZ = offset[2])).runSelfie(
             kfs, fv, tris.toIntArray(), { images[it.colorRef]!! },
         )
         var res = res0

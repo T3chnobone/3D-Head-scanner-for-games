@@ -123,7 +123,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var targetTriangles = LOW_TRIANGLES
     private lateinit var selfie: SelfieCapture
     private var headStyle = HeadStyle.REALISTIC
-    private var faceCapturePercent = 100
     private var hairStyle = HairStyle.SWEPT
     private lateinit var hairGroup: View
     private lateinit var editPanel: View
@@ -174,7 +173,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         hairGroup.visibility = if (selfieMode) View.VISIBLE else View.GONE
         setupShapeEditor()
         setupHairColorSliders()
-        faceCapturePercent = prefs.getInt("face_capture", 100)
         findViewById<View>(R.id.settings_button).setOnClickListener { showSettings() }
 
         selfieMode = prefs.getBoolean("selfie", false)
@@ -614,7 +612,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
-            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f, faceCapture = faceCapturePercent / 100f)
+            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f)
         lastSettings = settings
         showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
@@ -750,11 +748,17 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val labels = listOf(R.id.edit_size_label, R.id.edit_width_label, R.id.edit_height_label, R.id.edit_depth_label)
         val names = listOf("Size", "Face ←→", "Face ↑↓", "Face in/out")
         editBars = ids.map { findViewById(it) }
+        // Face sliders: one step = 1 mm, each on its own full-width row with big − / + buttons either side.
+        for (k in 1..3) {
+            editBars[k].max = Math.round(2 * FACE_MOVE[k - 1] * 1000)
+            enlargeFaceRow(editBars[k], findViewById(labels[k]))
+        }
         editBars.forEachIndexed { i, bar ->
             val label = findViewById<TextView>(labels[i])
             bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                    val t = (progress - 50) / 50f          // -1..1
+                    val half = sb.max / 2f
+                    val t = (progress - half) / half          // -1..1
                     if (i == 0) {
                         shapeSize = 1f + t * 0.5f            // 50%..150%
                         label.text = "Size ${(shapeSize * 100).toInt()}%"
@@ -781,6 +785,58 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             editBars[0].progress = 50
             for (k in 1..3) editBars[k].progress = defaultProgress(k)
         }
+    }
+
+    /**
+     * Rebuilds a face slider row as: label on top, then [−] slider [+] filling the width.
+     * Tapping − / + moves the face 1 mm; holding keeps moving it.
+     */
+    private fun enlargeFaceRow(bar: SeekBar, label: TextView) {
+        val row = bar.parent as android.widget.LinearLayout
+        val d = resources.displayMetrics.density
+        row.removeView(bar)
+        row.orientation = android.widget.LinearLayout.VERTICAL
+        label.layoutParams = android.widget.LinearLayout.LayoutParams(
+            android.widget.LinearLayout.LayoutParams.MATCH_PARENT, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT)
+        label.setPadding(0, (6 * d).toInt(), 0, 0)
+        val line = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        fun stepButton(text: String, delta: Int) = Button(this).apply {
+            this.text = text
+            textSize = 22f
+            minWidth = 0; minimumWidth = 0
+            setPadding(0, 0, 0, 0)
+            layoutParams = android.widget.LinearLayout.LayoutParams((56 * d).toInt(), (48 * d).toInt())
+            val repeat = object : Runnable {
+                override fun run() {
+                    bar.progress = (bar.progress + delta).coerceIn(0, bar.max)
+                    postDelayed(this, 90)
+                }
+            }
+            setOnTouchListener { v, ev ->
+                when (ev.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        bar.progress = (bar.progress + delta).coerceIn(0, bar.max)
+                        v.isPressed = true
+                        v.postDelayed(repeat, 450)
+                    }
+                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                        v.isPressed = false
+                        v.removeCallbacks(repeat)
+                        if (ev.actionMasked == android.view.MotionEvent.ACTION_UP) v.performClick()
+                    }
+                }
+                true
+            }
+        }
+        bar.layoutParams = android.widget.LinearLayout.LayoutParams(0, (48 * d).toInt(), 1f)
+        bar.setPadding((16 * d).toInt(), 0, (16 * d).toInt(), 0)
+        line.addView(stepButton("−", -1))
+        line.addView(bar)
+        line.addView(stepButton("+", +1))
+        row.addView(line)
         resetShape(HairStyle.BUZZ)
     }
 
@@ -892,8 +948,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     /** Slider position for each editor control's default (face starts [DEFAULT_FACE_Z] in). */
-    private fun defaultProgress(k: Int): Int =
-        if (k == 3) Math.round(50 + 50 * DEFAULT_FACE_Z / FACE_MOVE[2]) else 50
+    private fun defaultProgress(k: Int): Int {
+        if (k == 0) return 50
+        val half = editBars[k].max / 2
+        return if (k == 3) half + Math.round(DEFAULT_FACE_Z * 1000) else half
+    }
 
     /** A face position or hairstyle change: rebuild the head shortly after the slider stops, no Apply needed. */
     private fun markDirty() {
@@ -958,7 +1017,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     /** Puts every editor control back to neutral (used for a brand-new scan result). */
     private fun resetShape(hair: HairStyle) {
         suppressEditEvents = true
-        editBars.forEachIndexed { k, b -> b.progress = 51; b.progress = 50; b.progress = defaultProgress(k) }   // force change events so labels update
+        editBars.forEachIndexed { k, b -> b.progress = defaultProgress(k) + 1; b.progress = defaultProgress(k) }   // force change events so labels update
         editHair = hair
         editHairSpinner.setSelection(HairStyle.values().indexOf(hair))
         suppressEditEvents = false
@@ -1068,7 +1127,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         showStatus(previewText(result))
     }
 
-    /** Settings page (the ⋮ button): head style, plus a Debug section. Changes apply to the next scan. */
+    /** Settings page (the ⋮ button): head style. Changes apply to the next scan. */
     private fun showSettings() {
         val d = resources.displayMetrics.density
         fun px(v: Int) = (v * d).toInt()
@@ -1090,20 +1149,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         styles.check(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) goldeneye.id else realistic.id)
         box.addView(styles)
 
-        box.addView(header("Debug"))
-        val label = TextView(this)
-        fun setLabel(p: Int) {
-            label.text = "Percentage of face to capture using the front camera: $p%\n" +
-                (if (p == 0) "Only the eyes, nose and mouth." else if (p == 100) "As far around the face as the front camera sees." else "")
-        }
-        val bar = SeekBar(this).apply { max = 100; progress = faceCapturePercent }
-        setLabel(faceCapturePercent)
-        bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) = setLabel(progress)
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
-        })
-        box.addView(label); box.addView(bar)
         box.addView(TextView(this).apply {
             text = "Settings apply to the next scan."
             textSize = 12f
@@ -1115,8 +1160,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("Done") { _, _ ->
                 headStyle = if (styles.checkedRadioButtonId == goldeneye.id) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
-                faceCapturePercent = bar.progress
-                prefs.edit().putString("style", headStyle.name).putInt("face_capture", faceCapturePercent).apply()
+                prefs.edit().putString("style", headStyle.name).apply()
             }
             .setNegativeButton("Cancel", null)
             .show()

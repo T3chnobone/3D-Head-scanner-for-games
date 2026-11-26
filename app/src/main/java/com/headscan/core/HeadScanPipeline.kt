@@ -29,11 +29,6 @@ data class ScanSettings(
     val faceOffsetX: Float = 0f,
     val faceOffsetY: Float = 0f,
     val faceOffsetZ: Float = 0f,
-    /**
-     * Selfie mode only: how much of the real face is used, 0..1. 0 = just the eyes, nose and mouth
-     * (outer eye corners down to below the lips); 1 = everything the front camera's face mesh covers.
-     */
-    val faceCapture: Float = 1f,
 )
 
 /** Visual style of the generated head. */
@@ -157,7 +152,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         if (keyframes.size < 3) throw ScanException("Need at least 3 captured views, got ${keyframes.size}.")
         progress("Fitting head to your face", 0.05f)
         val head = SelfieHead(faceVertices, faceTriangles, settings.hairStyle,
-            floatArrayOf(settings.faceOffsetX, settings.faceOffsetY, settings.faceOffsetZ), settings.faceCapture)
+            floatArrayOf(settings.faceOffsetX, settings.faceOffsetY, settings.faceOffsetZ))
         val vol = head.buildVolume(0.003f, 0.012f)
         val hair = HairFill(head)
         return finishMesh(vol, keyframes, head.headCx, head.headCy, head.headCz, 0f, colorSource, hair, crop = false, progress, smoothing = 3)

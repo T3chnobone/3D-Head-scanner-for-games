@@ -24,8 +24,6 @@ class SelfieHead(
     val hairStyle: HairStyle = HairStyle.BUZZ,
     /** Moves the face relative to the generic head (metres, +X right, +Y up, +Z forward). */
     faceOffset: FloatArray = FloatArray(3),
-    /** 0..1: how much of the face mesh to use (0 = eyes, nose and mouth only; 1 = all of it). */
-    private val faceCapture: Float = 1f,
 ) {
     private val verts = faceVertices
 
@@ -89,25 +87,21 @@ class SelfieHead(
     }
 
     /**
-     * Whether a face-mesh vertex is inside the captured region: an ellipse that grows from the core
-     * (outer eye corners, nose, around the lips) at [faceCapture] = 0 to beyond the whole mesh at 1.
+     * Face-mesh triangles that are edge-on or face away (the mesh wrapping round the cheeks and under the jaw) are left out:
+     * as a front-facing height field they turn into blade-like spikes, and the generic head covers there anyway.
      */
-    private fun inCapture(i: Int): Boolean {
-        if (faceCapture >= 0.999f) return true
-        val h = maxY - minY
-        val k = faceCapture.coerceIn(0f, 1f)
-        val ax = faceW * (0.36f + 0.4f * k)
-        val ay = h * (0.4f + 0.36f * k)
-        val cx = (minX + maxX) / 2
-        val cy = minY + h * (0.46f + 0.04f * k)
-        val dx = (verts[3 * i] - cx) / ax; val dy = (verts[3 * i + 1] - cy) / ay
-        return dx * dx + dy * dy <= 1f
+    private fun frontFacing(a: Int, b: Int, c: Int): Boolean {
+        val ux = verts[3 * b] - verts[3 * a]; val uy = verts[3 * b + 1] - verts[3 * a + 1]; val uz = verts[3 * b + 2] - verts[3 * a + 2]
+        val vx = verts[3 * c] - verts[3 * a]; val vy = verts[3 * c + 1] - verts[3 * a + 1]; val vz = verts[3 * c + 2] - verts[3 * a + 2]
+        val nx = uy * vz - uz * vy; val ny = uz * vx - ux * vz; val nz = ux * vy - uy * vx
+        val l = sqrt(nx * nx + ny * ny + nz * nz)
+        return l < 1e-12f || nz / l >= 0.15f
     }
 
     private fun rasterizeFace() {
         for (t in 0 until faceTriangles.size / 3) {
             val a = faceTriangles[3 * t]; val b = faceTriangles[3 * t + 1]; val c = faceTriangles[3 * t + 2]
-            if (!inCapture(a) || !inCapture(b) || !inCapture(c)) continue
+            if (!frontFacing(a, b, c)) continue
             val ax = gx(verts[3 * a]); val ay = gy(verts[3 * a + 1]); val az = verts[3 * a + 2]
             val bx = gx(verts[3 * b]); val by = gy(verts[3 * b + 1]); val bz = verts[3 * b + 2]
             val cx = gx(verts[3 * c]); val cy = gy(verts[3 * c + 1]); val cz = verts[3 * c + 2]
@@ -272,7 +266,7 @@ class SelfieHead(
             }
             HairStyle.BUZZ, HairStyle.NONE -> 0f
         }
-        return t * cov
+        return t * cov * (1f - hairCutAroundEars(x, y, z))
     }
 
     /** Extra hair shapes that stick out beyond the scalp (bob curtain, bun). 1 = none. */
@@ -299,6 +293,11 @@ class SelfieHead(
 
     /** 0..1 hair colour amount for texturing (scalp coverage, or 1 on bob / bun shapes). */
     fun hairColorAmount(x: Float, y: Float, z: Float): Float {
+        val onEar = 1f - smoothstep(0.001f, 0.006f, earSdf(x, y, z))
+        return hairColorRaw(x, y, z) * (1f - onEar)
+    }
+
+    private fun hairColorRaw(x: Float, y: Float, z: Float): Float {
         if (locks.isNotEmpty()) {
             val on = lockCover(x, y, z)
             if (on > 0f) return max(on, scalpCoverage(x, y, z))
@@ -317,9 +316,52 @@ class SelfieHead(
         }
     }
 
+    // ------------------------------------------------------------------ ears
+
+    private val earScale = faceW / 0.14f
+    /** Ear centre height: between eye level and the bottom of the nose. */
+    private val earY = minY + 0.47f * (maxY - minY)
+    private val earZ = headCz - 0.012f * earScale
+    /** Skull surface X at the ear centre. */
+    private val earSkullX: Float = run {
+        val ey = (earY - headCy) / ry; val ez = (earZ - headCz) / rz
+        rx * sqrt((1f - ey * ey - ez * ez).coerceAtLeast(0.05f))
+    }
+    private val earTiltS = -0.26f    // sin(-15°): the top of the ear leans back
+    private val earTiltC = 0.966f
+
+    private fun ellipsoid(px: Float, py: Float, pz: Float, ax: Float, ay: Float, az: Float): Float {
+        val qx = px / ax; val qy = py / ay; val qz = pz / az
+        return (sqrt(qx * qx + qy * qy + qz * qz) - 1f) * min(ax, min(ay, az))
+    }
+
+    /** Signed distance to the two ears: a flattened shell, leaning back, with a hollow bowl on the outside. */
+    fun earSdf(x: Float, y: Float, z: Float): Float {
+        val s = earScale
+        val lx = abs(x - headCx) - earSkullX     // outward from the skull
+        val ly = y - earY; val lz = z - earZ
+        if (lx < -0.03f * s || abs(ly) > 0.06f * s || abs(lz) > 0.05f * s) return 1f
+        val yy = ly * earTiltC + lz * earTiltS
+        val zz = -ly * earTiltS + lz * earTiltC
+        // Stands further out at the back edge, like real ears.
+        val flare = (-zz / (0.018f * s)).coerceIn(-1f, 1f) * 0.006f * s
+        val body = ellipsoid(lx - 0.007f * s - flare, yy, zz + 0.002f * s, 0.0105f * s, 0.034f * s, 0.02f * s)
+        val bowl = ellipsoid(lx - 0.016f * s - flare, yy + 0.002f * s, zz + 0.004f * s, 0.0082f * s, 0.024f * s, 0.012f * s)
+        return max(body, -bowl)
+    }
+
+    /** 0..1: short styles are cut back around the ears so the ears show. */
+    private fun hairCutAroundEars(x: Float, y: Float, z: Float): Float {
+        if (hairStyle == HairStyle.BOB || hairStyle == HairStyle.AFRO || hairStyle == HairStyle.LONG_LOCKS) return 0f
+        val dx = abs(x - headCx) - earSkullX; val dy = (y - earY) / 1.4f; val dz = z - earZ
+        val d = sqrt(dx * dx + dy * dy + dz * dz)
+        return 1f - smoothstep(0.024f * earScale, 0.036f * earScale, d)
+    }
+
     /** Head + neck + hair, before the face is merged in. */
     private fun headWithHair(x: Float, y: Float, z: Float): Float {
         var g = genericSdf(x, y, z) - hairThickness(x, y, z)
+        g = smin(g, earSdf(x, y, z), 0.003f)
         if (hairStyle == HairStyle.FLAT_TOP) g = max(g, y - (headCy + ry + 0.016f))
         val extra = extraHairSdf(x, y, z)
         if (extra < 0.05f) g = smin(g, extra, 0.006f)
@@ -345,9 +387,12 @@ class SelfieHead(
         val w = blend[k]
         val fz = (z - zf) * 0.85f
         // The face may only add material close to the generic head, so steep mesh borders can't form flaps.
-        val faceSlab = max(max(fz, (zf - 0.07f) - z), g - 0.03f)
-        val union = min(g, faceSlab)
-        return if (z > zf) w * fz + (1 - w) * union else union
+        // Near the border the allowance shrinks to a few mm, so nothing sticks out at the sides of the face.
+        val faceSlab = max(max(fz, (zf - 0.07f) - z), g - (0.004f + 0.026f * w))
+        val faceField = if (z > zf) fz else min(g, faceSlab)
+        // Fade from the face to the plain head across the border band (in x/y), so the jagged edge of the
+        // face mesh can't leave ridges or blades on the cheeks and jaw.
+        return w * faceField + (1 - w) * g
     }
 
 
@@ -688,7 +733,7 @@ class SelfieHead(
 
     /** Fills a TSDF volume (bounds chosen to hold head + neck) from [sdf]. */
     fun buildVolume(voxel: Float, truncation: Float): TsdfVolume {
-        val pad = when (hairStyle) { HairStyle.BUZZ, HairStyle.NONE -> 0.02f; HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.SLICKED_BACK, HairStyle.LONG_LOCKS -> 0.06f; HairStyle.SPIKY, HairStyle.FAUX_HAWK -> 0.08f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
+        val pad = when (hairStyle) { HairStyle.BUZZ, HairStyle.NONE -> 0.035f; HairStyle.SWEPT, HairStyle.CURTAINS, HairStyle.SLICKED_BACK, HairStyle.LONG_LOCKS -> 0.06f; HairStyle.SPIKY, HairStyle.FAUX_HAWK -> 0.08f; HairStyle.AFRO, HairStyle.MOHAWK -> 0.075f; else -> 0.05f }
         val x0 = min(headCx - rx, minX) - pad; val x1 = max(headCx + rx, maxX) + pad
         val y0 = neckBottom; val y1 = max(headCy + ry, maxY) + pad
         val z0 = headCz - rz - pad; val z1 = max(noseZ, headCz + rz) + pad
