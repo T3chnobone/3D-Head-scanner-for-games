@@ -97,6 +97,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     @Volatile private var state = State.AIM
     @Volatile private var startRequested = false
+    @Volatile private var startRequestedMs = 0L
     /** Set when Finish is tapped: the GL thread takes one last tracked frame to line the detail photo up with. */
     private val finishRequested = java.util.concurrent.atomic.AtomicBoolean(false)
     private var arCameraId: String? = null
@@ -205,7 +206,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         actionButton.setOnClickListener {
             when (state) {
-                State.AIM -> { startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Measuring distance to the face…") }
+                State.AIM -> { startRequestedMs = SystemClock.uptimeMillis(); lastHint = ""; startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Measuring distance to the face…") }
                 State.CAPTURING -> requestFinish()
                 State.PREVIEW -> askNameAndSave()
                 State.DONE -> resetScan()
@@ -336,7 +337,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val filter = CameraConfigFilter(s).setFacingDirection(facing)
         val configs = s.getSupportedCameraConfigs(filter)
         val best = configs
-            .filter { it.imageSize.width <= 4096 }
+            // Larger tracking images can stop depth or tracking on some phones; the full-resolution
+            // Finish photo gives the sharpness instead.
+            .filter { it.imageSize.width <= 1920 }
             .maxWithOrNull(
                 compareBy<CameraConfig> { if (it.depthSensorUsage == CameraConfig.DepthSensorUsage.REQUIRE_AND_USE) 1 else 0 }
                     .thenBy { it.imageSize.width * it.imageSize.height }
@@ -459,7 +462,14 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private fun tryStartCapture(frame: Frame, camera: Camera) {
         val depthImage = try { frame.acquireDepthImage16Bits() } catch (e: NotYetAvailableException) {
-            hint("Depth not ready yet – move the phone slightly and tap Start again."); return
+            // Depth can take a moment after tracking starts: keep trying for a few seconds before giving up.
+            if (SystemClock.uptimeMillis() - startRequestedMs < START_RETRY_MS) {
+                startRequested = true
+                hint("Measuring distance to the face… move the phone very slightly side to side.")
+            } else {
+                hint("Depth not ready yet – move the phone slowly side to side and tap Start again.")
+            }
+            return
         }
         val d = depthImage.use { ImageUtils.centerDepth(ImageUtils.depthToShorts(it), it.width, it.height) }
         if (d < 0.2f || d > 1.2f) {
@@ -1114,6 +1124,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         /** How far the face can be moved on the head: ±2 cm sideways, ±3 cm up/down, ±2 cm in/out. */
         /** Hair colour slider positions below this mean "natural colour". */
         private const val HUE_NATURAL = 20
+        private const val START_RETRY_MS = 4000L
         private val FACE_MOVE = floatArrayOf(0.02f, 0.03f, 0.04f)
         /** New selfie heads start with the face 20 mm in. */
         private const val DEFAULT_FACE_Z = -0.02f

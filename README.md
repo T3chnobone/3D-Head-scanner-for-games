@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.15**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.16**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -90,7 +90,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ## How it works
 
 ```
-ARCore session (DepthMode.AUTOMATIC, largest CPU image)
+ARCore session (DepthMode.AUTOMATIC, largest CPU image up to 1920 px wide)
   └─ keyframe every ~9° around the head: DEPTH16 map + camera photo (JPEG) + camera pose + intrinsics
        │
        ▼   core/ (pure Kotlin, unit-tested on the JVM)
