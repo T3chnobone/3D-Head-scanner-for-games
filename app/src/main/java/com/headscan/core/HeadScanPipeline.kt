@@ -522,17 +522,29 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         if (settings.beard != Beard.NONE) paintBeard(baker, texture, hf, settings.beard, hairCol, 1f, onlyPainted = false)
     }
 
+    /**
+     * Facial hair like real stubble or beard: individual dark hairs drawn at the texture's own resolution (one texel
+     * each, so no blocks), thickest along the jaw and chin, thinning out up the cheeks and softly down the neck, with
+     * gentle patchiness, over a faint shadow of the hair colour (the "five o'clock shadow").
+     */
     private fun paintBeard(baker: TextureBaker, texture: IntArray, hf: HairFill, style: Beard, colour: Int, strength: Float, onlyPainted: Boolean) {
         val head = hf.head
-        val reach = when (style) { Beard.STUBBLE -> 0.015f; Beard.SHORT -> 0.025f; else -> 0.035f }
-        val base = when (style) { Beard.STUBBLE -> 0.1f; Beard.SHORT -> 0.5f; else -> 0.8f }
-        val dots = when (style) { Beard.STUBBLE -> 0.3f; Beard.SHORT -> 0.6f; else -> 0.4f }
+        val reach = when (style) { Beard.STUBBLE -> 0.018f; Beard.SHORT -> 0.025f; else -> 0.035f }
+        val soft = when (style) { Beard.STUBBLE -> 0.03f; Beard.SHORT -> 0.022f; else -> 0.014f }
+        val shadow = when (style) { Beard.STUBBLE -> 0.18f; Beard.SHORT -> 0.32f; else -> 0.55f }
+        val coverage = when (style) { Beard.STUBBLE -> 0.55f; Beard.SHORT -> 0.8f; else -> 0.95f }
+        val hairMix = when (style) { Beard.STUBBLE -> 0.75f; Beard.SHORT -> 0.85f; else -> 0.9f }
+        fun hash1(i: Int): Float {
+            var h = i * 374761393 + 1274126177
+            h = (h xor (h ushr 13)) * 1274126177
+            return ((h xor (h ushr 16)) and 0xFFFFFF) / 16777215f
+        }
         fun hash3(i: Int, j: Int, k: Int): Float {
             var hh = i * 374761393 + j * 668265263 + k * 2147483629
             hh = (hh xor (hh ushr 13)) * 1274126177
             return ((hh xor (hh ushr 16)) and 0xFFFFFF) / 16777215f
         }
-        // Smooth value noise 0..1 (trilinear between hashed lattice points).
+        // Smooth value noise 0..1, for patchiness.
         fun vnoise(fx: Float, fy: Float, fz: Float): Float {
             val ix = kotlin.math.floor(fx).toInt(); val iy = kotlin.math.floor(fy).toInt(); val iz = kotlin.math.floor(fz).toInt()
             fun sm(t: Float) = t * t * (3f - 2f * t)
@@ -546,19 +558,20 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         }
         val cr = (colour shr 16) and 255; val cg = (colour shr 8) and 255; val cb = colour and 255
         baker.mapTexelsT(texture) { t, x, y, z, _, _, _, c ->
-            var w = head.beardZone(x, y, z, reach) * strength
+            var w = head.beardZone(x, y, z, reach, soft, jawWeighted = true) * strength
             if (onlyPainted) w *= (1f - head.faceMask(x, y, z)) * (1f - hf.photoAt(t))
             if (w <= 0.01f) return@mapTexelsT c
-            // Hairs: a coverage tone plus a soft hair pattern (smooth noise, no blocks; drawn out downwards for
-            // longer beards so it reads as strands).
-            val cell = if (style == Beard.STUBBLE) 0.0012f else 0.0016f
-            val stretch = if (style == Beard.STUBBLE) 1f else 2.2f
-            val v = 0.6f * vnoise(x / cell, y / (cell * stretch), z / cell) + 0.4f * vnoise(x / (0.5f * cell) + 17f, y / (0.5f * cell * stretch), z / (0.5f * cell))
-            val hairs = smoothstep(1f - dots - 0.12f, 1f - dots + 0.12f, v)
-            val a = base + (1f - base) * hairs * (if (style == Beard.STUBBLE) 0.55f else 0.85f)
-            val shade = 0.85f + 0.3f * v
-            val k = (a * w).coerceIn(0f, 1f)
-            fun ch(sh: Int, hc: Int) = (((c shr sh) and 255) * (1f - k) + (hc * shade).coerceAtMost(255f) * k).toInt().coerceIn(0, 255)
+            // Patchy growth: a little thinner and thicker in places.
+            val patch = 0.75f + 0.5f * vnoise(x / 0.012f, y / 0.012f, z / 0.012f)
+            val d = (w * patch).coerceIn(0f, 1f)
+            // One hair per texel, more of them where the beard is thicker; each a little different in darkness.
+            val h = hash1(t)
+            val isHair = h < d * coverage
+            val dark = 0.55f + 0.45f * hash1(t + 7919)
+            var k = shadow * d
+            var tone = 1f
+            if (isHair) { k = kotlin.math.max(k, hairMix * (0.6f + 0.4f * d)); tone = dark }
+            fun ch(sh: Int, hc: Int) = (((c shr sh) and 255) * (1f - k) + hc * tone * k).toInt().coerceIn(0, 255)
             (0xFF shl 24) or (ch(16, cr) shl 16) or (ch(8, cg) shl 8) or ch(0, cb)
         }
     }
@@ -629,10 +642,13 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         baker.mapTexelsT(texture) { t, x, y, z, nx, _, nz, c ->
             val e = earAmt(head, x, y, z) * (1f - head.faceMask(x, y, z)) * (1f - hf.photoAt(t)) * (1f - head.hairColorAmount(x, y, z))
             if (e <= 0.01f) return@mapTexelsT c
-            // Facing outward-sideways = the rim and outer surface; facing forward/back = inside the folds.
+            // Shading from the ear's own folds (darker creases and bowl, lighter rim) when the head model is used;
+            // otherwise lighter where the ear faces outward, darker where it faces into the folds.
             val side = kotlin.math.abs(nx) / (kotlin.math.abs(nx) + kotlin.math.abs(nz) + 1e-3f)
-            val light = 0.93f + 0.1f * side
-            val r = 1.07f * light; val g = 0.97f * light; val b = 0.95f * light
+            val light = head.earShade(x, y, z) ?: (0.93f + 0.1f * side)
+            // Shadowed creases go a little redder (thin skin), like real ears.
+            val warm = ((1f - light) * 0.5f).coerceIn(0f, 0.2f)
+            val r = (1.06f + warm) * light; val g = (0.97f - 0.3f * warm) * light; val b = (0.95f - 0.3f * warm) * light
             fun ch(sh: Int, m: Float): Int { val v = ((c shr sh) and 255).toFloat(); return (v * (1f + (m - 1f) * e)).toInt().coerceIn(0, 255) }
             (0xFF shl 24) or (ch(16, r) shl 16) or (ch(8, g) shl 8) or ch(0, b)
         }

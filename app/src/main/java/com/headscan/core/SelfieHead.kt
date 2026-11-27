@@ -565,7 +565,7 @@ class SelfieHead(
      * bucketed in a 5 mm grid.
      */
     private class EarPoints(val pts: FloatArray, val ear: BooleanArray, val x0: Float, val y0: Float, val z0: Float,
-                            val nx: Int, val ny: Int, val nz: Int, val cells: Array<IntArray?>)
+                            val nx: Int, val ny: Int, val nz: Int, val cells: Array<IntArray?>, val shade: FloatArray)
 
     private val earPoints: EarPoints? by lazy {
         val fit = fitted ?: return@lazy null
@@ -591,7 +591,66 @@ class SelfieHead(
             val i = ((pts[3 * k] - x0) / c).toInt(); val j = ((pts[3 * k + 1] - y0) / c).toInt(); val l = ((pts[3 * k + 2] - z0) / c).toInt()
             lists[(l * ny + j) * nx + i].add(k)
         }
-        EarPoints(pts, ear, x0, y0, z0, nx, ny, nz, Array(lists.size) { if (lists[it].size == 0) null else lists[it].toArray() })
+        val cells = Array(lists.size) { if (lists[it].size == 0) null else lists[it].toArray() }
+        // Shading from the ear's real folds on the detailed model: creases (the surface curving in) and the bowl
+        // (surface with lots of ear in front of it) darker, the rim (curving out) lighter.
+        val nrm = m.vertexNormals(v)
+        val sum = FloatArray(m.n * 3); val cnt = IntArray(m.n)
+        val tr = m.tris
+        for (f in 0 until tr.size / 3) for (a in 0 until 3) {
+            val i = tr[3 * f + a]; val j = tr[3 * f + (a + 1) % 3]
+            for (c in 0 until 3) { sum[3 * i + c] += v[3 * j + c]; sum[3 * j + c] += v[3 * i + c] }
+            cnt[i]++; cnt[j]++
+        }
+        val shade = FloatArray(idx.size)
+        val reach = 0.012f
+        for (k in idx.indices) {
+            val i = idx[k]
+            val px = pts[3 * k]; val py = pts[3 * k + 1]; val pz = pts[3 * k + 2]
+            val nx0 = nrm[3 * i]; val ny0 = nrm[3 * i + 1]; val nz0 = nrm[3 * i + 2]
+            var cav = 0f
+            if (cnt[i] > 0) {
+                val ax = sum[3 * i] / cnt[i] - px; val ay = sum[3 * i + 1] / cnt[i] - py; val az = sum[3 * i + 2] / cnt[i] - pz
+                cav = (ax * nx0 + ay * ny0 + az * nz0) / 0.0015f          // about -1 (rim) .. +1 (crease)
+            }
+            var occ = 0f
+            val ci = ((px - x0) / c).toInt(); val cj = ((py - y0) / c).toInt(); val ck = ((pz - z0) / c).toInt()
+            for (dk in -3..3) for (dj in -3..3) for (di in -3..3) {
+                val a = ci + di; val b = cj + dj; val l = ck + dk
+                if (a < 0 || b < 0 || l < 0 || a >= nx || b >= ny || l >= nz) continue
+                val list = cells[(l * ny + b) * nx + a] ?: continue
+                for (q in list) {
+                    val dx = pts[3 * q] - px; val dy = pts[3 * q + 1] - py; val dz = pts[3 * q + 2] - pz
+                    val d = sqrt(dx * dx + dy * dy + dz * dz)
+                    if (d > reach || d < 1e-4f) continue
+                    val front = (dx * nx0 + dy * ny0 + dz * nz0) / d
+                    if (front > 0.3f) occ += front * (1f - d / reach)
+                }
+            }
+            shade[k] = (1f - 0.035f * occ - 0.25f * cav.coerceIn(-1f, 1.5f)).coerceIn(0.5f, 1.15f)
+        }
+        EarPoints(pts, ear, x0, y0, z0, nx, ny, nz, cells, shade)
+    }
+
+    /** Shading of the ear at a point from its real folds (about 0.5 in deep creases .. 1.15 on the rim), or null. */
+    fun earShade(x: Float, y: Float, z: Float): Float? {
+        val e = earPoints ?: return null
+        val c = EAR_CELL
+        val ci = ((x - e.x0) / c).toInt(); val cj = ((y - e.y0) / c).toInt(); val ck = ((z - e.z0) / c).toInt()
+        var ws = 0f; var vs = 0f
+        for (dk in -1..1) for (dj in -1..1) for (di in -1..1) {
+            val i = ci + di; val j = cj + dj; val k = ck + dk
+            if (i < 0 || j < 0 || k < 0 || i >= e.nx || j >= e.ny || k >= e.nz) continue
+            val list = e.cells[(k * e.ny + j) * e.nx + i] ?: continue
+            for (p in list) {
+                val dx = e.pts[3 * p] - x; val dy = e.pts[3 * p + 1] - y; val dz = e.pts[3 * p + 2] - z
+                val d2 = dx * dx + dy * dy + dz * dz
+                if (d2 > 0.004f * 0.004f) continue
+                val w = 1f / (d2 + 1e-6f)
+                ws += w; vs += w * e.shade[p]
+            }
+        }
+        return if (ws > 0f) vs / ws else null
     }
 
     /**
@@ -625,13 +684,13 @@ class SelfieHead(
      * chin and jaw, and under the jaw fading out [neckReach] metres down the neck. Not on the lips or the ears.
      * Placed from the person's own face points (mouth corners, lips, nose base, chin, jaw, face edge by the ear).
      */
-    fun beardZone(x: Float, y: Float, z: Float, neckReach: Float): Float {
+    fun beardZone(x: Float, y: Float, z: Float, neckReach: Float, soft: Float = 0.005f, jawWeighted: Boolean = false): Float {
         val s = earScale
         val behind = smoothstep(earZ - 0.002f * s, earZ + 0.01f * s, z)
         if (behind <= 0f) return 0f
         val ear = onEar(x, y, z)
         if (ear >= 1f) return 0f
-        if (!namedPoints) return genericBeardZone(x, y, z, neckReach) * behind * (1f - ear)
+        if (!namedPoints) return genericBeardZone(x, y, z, neckReach, soft) * behind * (1f - ear)
         val cx = (px(61) + px(291)) / 2
         // The side of the face this point is on: mouth corner, face edge by the ear, jaw angle.
         val plusSide = px(291) > px(61)
@@ -651,19 +710,21 @@ class SelfieHead(
             u <= 1f -> aboveCorner + (sideburn - aboveCorner) * ((u - um) / (1f - um))
             else -> sideburn
         }
-        val top = 1f - smoothstep(upper - 0.005f, upper + 0.004f, y)
+        val top = 1f - smoothstep(upper - soft, upper + 0.004f, y)
         // Bottom edge: chin in the middle, jaw angle at the side, rising towards the ear; then down the neck.
         val jaw = if (u <= 1f) py(152) + (py(ja) - py(152)) * u else py(ja)
-        val bottom = smoothstep(jaw - neckReach - 0.012f, jaw - neckReach + 0.004f, y)
+        val bottom = smoothstep(jaw - neckReach - 0.6f * soft - 0.012f, jaw - neckReach + 0.004f, y)
+        // Thickest along the jaw and chin, as beards grow.
+        val jawW = if (jawWeighted) 0.6f + 0.4f * (1f - smoothstep(0.004f, 0.03f, abs(y - jaw))) else 1f
         // Lips stay clear.
         val l = lips!!
         val lx = (x - l[0]) / (l[2] + 0.003f); val ly = (y - l[1]) / (l[3] + 0.002f)
         val lipsW = if (z > noseZ - 0.05f) smoothstep(0.9f, 1.15f, sqrt(lx * lx + ly * ly)) else 1f
-        return behind * top * bottom * lipsW * (1f - ear)
+        return behind * top * bottom * lipsW * (1f - ear) * jawW
     }
 
     /** [beardZone] from typical proportions, when the face points can't be named. */
-    private fun genericBeardZone(x: Float, y: Float, z: Float, neckReach: Float): Float {
+    private fun genericBeardZone(x: Float, y: Float, z: Float, neckReach: Float, soft: Float): Float {
         val h = maxY - minY
         val cx = (minX + maxX) / 2
         val ax = abs(x - cx)
@@ -672,7 +733,7 @@ class SelfieHead(
         val mouthHalf = 0.22f * faceW
         val front = smoothstep(earZ, noseZ - 0.03f, z)
         val upper = earY - 0.004f * s + (minY + 0.31f * h - (earY - 0.004f * s)) * Math.pow(front.toDouble(), 0.7).toFloat()
-        val top = 1f - smoothstep(upper - 0.006f, upper + 0.004f, y)
+        val top = 1f - smoothstep(upper - max(0.006f, soft), upper + 0.004f, y)
         val jaw = minY + (earY - 0.07f * s - minY) * (1f - front)
         val bottom = smoothstep(jaw - neckReach - 0.012f, jaw - neckReach + 0.004f, y)
         val lx = ax / (1.12f * mouthHalf); val ly = (y - mouthY - 0.003f * h) / (0.04f * h)
