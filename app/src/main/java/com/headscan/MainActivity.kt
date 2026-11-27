@@ -124,8 +124,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     @Volatile private var selfieMode = false
     /** Image mode: the head is built from one picture chosen from the library (no camera). */
     private var imageMode = false
-    private val pickImage = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) processImage(uri)
+    // The system photo picker (opens over the app on recent Android; older phones get the file chooser).
+    private val pickImage = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) processImage(uri) else if (imageMode && state == State.AIM) showStatus("No picture chosen.\n\n$IMAGE_HINT")
     }
     private var targetTriangles = LOW_TRIANGLES
     private lateinit var selfie: SelfieCapture
@@ -159,6 +160,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashLog()
         setContentView(R.layout.activity_main)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
@@ -212,7 +214,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         actionButton.setOnClickListener {
             when (state) {
-                State.AIM -> if (imageMode) pickImage.launch("image/*") else { startRequestedMs = SystemClock.uptimeMillis(); lastHint = ""; startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Looking for the head…") }
+                State.AIM -> if (imageMode) {
+                    showStatus("Opening your photos…")
+                    pickImage.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                } else { startRequestedMs = SystemClock.uptimeMillis(); lastHint = ""; startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Looking for the head…") }
                 State.CAPTURING -> requestFinish()
                 State.PREVIEW -> askNameAndSave()
                 State.DONE -> resetScan()
@@ -963,7 +968,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     /** Image mode: finds the face in the chosen picture and builds the head from it. */
     private fun processImage(uri: android.net.Uri) {
-        if (state != State.AIM) return
+        if (state == State.PROCESSING || state == State.CAPTURING) return
+        if (state != State.AIM) resetScan()
         state = State.PROCESSING
         enterProcessing()
         showStatus("Finding the face in the picture…")
@@ -1334,6 +1340,28 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             if (row.parent !== editPanel) row = row.parent as View
             val show = !minimised
             row.visibility = if (show) View.VISIBLE else View.GONE
+        }
+    }
+
+    /**
+     * If the app crashes, the error is written to a file and shown the next time it opens, so a problem on the
+     * phone can be reported (and fixed) instead of the app just disappearing.
+     */
+    private fun installCrashLog() {
+        val file = File(filesDir, "last_crash.txt")
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try { file.writeText("v${BuildConfig.VERSION_NAME}\n" + android.util.Log.getStackTraceString(e).take(3000)) } catch (_: Throwable) {}
+            previous?.uncaughtException(t, e)
+        }
+        if (file.exists()) {
+            val text = try { file.readText() } catch (_: Throwable) { "" }
+            file.delete()
+            if (text.isNotBlank()) window.decorView.post {
+                android.app.AlertDialog.Builder(this).setTitle("The app crashed last time")
+                    .setMessage("Please send a screenshot of this so it can be fixed:\n\n" + text.take(1200))
+                    .setPositiveButton("OK", null).show()
+            }
         }
     }
 

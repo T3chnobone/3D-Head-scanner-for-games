@@ -29,13 +29,16 @@ object PhotoImport {
         val detector = FaceMeshDetection.getClient(
             FaceMeshDetectorOptions.Builder().setUseCase(FaceMeshDetectorOptions.FACE_MESH).build())
         try {
-            val meshes = Tasks.await(detector.process(InputImage.fromBitmap(bmp, 0)))
+            // The detector gets a smaller copy (less memory); points are scaled back to the full picture.
+            val k = minOf(1f, 960f / max(bmp.width, bmp.height))
+            val small = if (k < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * k).toInt(), (bmp.height * k).toInt(), true) else bmp
+            val meshes = try { Tasks.await(detector.process(InputImage.fromBitmap(small, 0))) } finally { if (small !== bmp) small.recycle() }
             val mesh = meshes.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
                 ?: throw ScanException("No face found in that picture. Pick a clear photo of a face looking at the camera.")
             val pts = mesh.allPoints
             val n = pts.maxOf { it.index } + 1
             val px = FloatArray(n); val py = FloatArray(n); val pz = FloatArray(n)
-            for (p in pts) { px[p.index] = p.position.x; py[p.index] = p.position.y; pz[p.index] = p.position.z }
+            for (p in pts) { px[p.index] = p.position.x / k; py[p.index] = p.position.y / k; pz[p.index] = p.position.z / k }
             val tris = ArrayList<Int>()
             for (t in mesh.allTriangles) {
                 val a = t.allPoints
