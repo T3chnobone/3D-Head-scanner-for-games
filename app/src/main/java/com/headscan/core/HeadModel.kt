@@ -108,7 +108,7 @@ class HeadModel private constructor(
         rot(noseTip, q)
         if (start == null) for (a in 0..2) t[a] = nose[a] - s * q[a]
 
-        val faceIdx = (0 until n).filter { has(it, FACE) && !has(it, CAP) }.filterIndexed { j, _ -> j % 2 == 0 }.toIntArray()
+        val faceIdx = (0 until n).filter { has(it, FACE) && !has(it, CAP) && !has(it, EAR) }.filterIndexed { j, _ -> j % 2 == 0 }.toIntArray()
         val ata = DoubleArray(np * np); val atb = DoubleArray(np)
         val row = DoubleArray(np)
         val fs = FloatArray(4)

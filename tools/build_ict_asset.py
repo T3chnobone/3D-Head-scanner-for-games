@@ -37,11 +37,21 @@ for L in loops:
     for a,b in zip(L,L[1:]+L[:1]): tris.append([b,a,ci])  # boundary edge a->b belongs to a face; cap uses b->a
 Vall=np.array(Vall)/100.0; Mall=np.stack(Mall,1)/100.0  # metres; K,N,3
 N=len(Vall)
-# ears: head-region vertices that stand out from the skull sideways
-H=np.arange(9409,NV)
-ear=(np.abs(Vall[H,0])>0.066)&(Vall[H,1]>-0.045)&(Vall[H,1]<0.045)&(Vall[H,2]<0.03)&(Vall[H,2]>-0.06)
-flags[H[ear]]|=2
-print('verts',N,'tris',len(tris),'loops',[len(l) for l in loops],'ears',ear.sum())
+# ears: they are part of the model's "face" area; found as what sticks out sideways at ear height, grown from the
+# outermost points
+cand=np.zeros(N,bool); cand[:9409]=(np.abs(Vall[:9409,0])>0.062)&(Vall[:9409,2]<0.035)&(Vall[:9409,1]>-0.045)&(Vall[:9409,1]<0.04)
+adj=defaultdict(set)
+for a_,b_,c_ in tris:
+    for u,v in ((a_,b_),(b_,c_),(c_,a_)): adj[u].add(v); adj[v].add(u)
+ear=np.zeros(N,bool)
+stack=[i for i in range(N) if cand[i] and abs(Vall[i,0])>0.082]
+for i in stack: ear[i]=True
+while stack:
+    u=stack.pop()
+    for v in adj[u]:
+        if not ear[v] and cand[v] and abs(Vall[v,0])>0.07: ear[v]=True; stack.append(v)
+flags[ear]|=2
+print('verts',N,'tris',len(tris),'loops',[len(l) for l in loops],'ears',int(ear.sum()))
 # closedness check
 e2=defaultdict(int)
 for t in tris:

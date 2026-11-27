@@ -377,13 +377,15 @@ class SelfieHead(
 
     /** Height of the hairline around the head: forehead in front, sideburns at the sides, nape at the back. */
     private fun hairlineY(x: Float, z: Float): Float {
-        val w = (z - headCz) / rz
+        // Measured from the ear, front to back: the forehead line carries across the temples, drops to a short
+        // sideburn just in front of the ear, goes round the ear, and comes down to the nape at the back.
         val s = abs(x - headCx) / rx
         val forehead = maxY - 0.008f + 0.008f * smoothstep(0.35f, 0.85f, s)   // slight temple recession
-        val side = headCy - 0.03f
+        val sideburn = earY - 0.005f * earScale
         val nape = minY + 0.04f
-        return if (w < 0f) nape + (side - nape) * smoothstep(-1f, 0f, w)
-        else side + (forehead - side) * smoothstep(0f, 0.55f, w)
+        val dz = (z - earZ) / earScale
+        return if (dz > 0.012f) sideburn + (forehead - sideburn) * smoothstep(0.018f, 0.04f, dz)
+        else nape + (sideburn - nape) * smoothstep(-0.075f, 0f, dz)
     }
 
     /** 0..1: how much of the scalp at this point is covered by hair (soft hairline, never on the face). */
