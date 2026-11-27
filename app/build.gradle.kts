@@ -11,8 +11,8 @@ android {
         applicationId = "com.headscan"
         minSdk = 24
         targetSdk = 35
-        versionCode = 35
-        versionName = "0.35"
+        versionCode = 36
+        versionName = "0.36"
     }
 
     buildTypes {
@@ -49,6 +49,8 @@ dependencies {
     // On-device person cut-out (Selfie mode head measuring); the model is bundled, no network needed.
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
     implementation("com.google.mlkit:face-mesh-detection:16.0.0-beta1")
+    // AI post process (Real-ESRGAN sharpen / denoise, MediaPipe skin segmenter); models are in assets.
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.0.21")

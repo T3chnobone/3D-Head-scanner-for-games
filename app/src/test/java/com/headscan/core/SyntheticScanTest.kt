@@ -279,6 +279,36 @@ class SyntheticScanTest {
         } finally { skinMode = false; sideLight = false; images.clear() }
     }
 
+    /** The AI post-process options run with stand-in nets (x4 nearest upscale, a colour-based segmenter). */
+    @Test
+    fun aiPostProcess() {
+        val calls = intArrayOf(0, 0)
+        val upscale: (FloatArray) -> FloatArray = { inp ->
+            calls[0]++
+            FloatArray(256 * 256 * 3) { o -> val p = o / 3; val c = o % 3; inp[3 * ((p / 256 / 4) * 64 + (p % 256) / 4) + c] }
+        }
+        AiModels.sharpen = upscale; AiModels.denoise = upscale
+        AiModels.segment = { inp ->
+            calls[1]++
+            FloatArray(256 * 256 * 6) { o -> val p = o / 6; val c = o % 6
+                val dark = inp[3 * p] < 0.15f && inp[3 * p + 1] < 0.15f
+                if ((dark && c == SkinLabels.BACKGROUND) || (!dark && c == SkinLabels.FACE_SKIN)) 1f else 0f }
+        }
+        skinMode = true
+        try {
+            val plain = selfie(1500, hair = HairStyle.NONE, outName = "ai_none")
+            images.clear()
+            val sharp = selfie(1500, hair = HairStyle.NONE, outName = "ai_sharpen", tweak = { it.copy(enhance = Enhance.SHARPEN) })
+            assertTrue(calls[0] > 4, "sharpen net used on face blocks: ${calls[0]}")
+            var changed = 0
+            for (i in plain.texture.indices) if (plain.texture[i] != sharp.texture[i]) changed++
+            assertTrue(changed in 1000 until plain.texture.size / 2, "only the face is touched: $changed")
+            images.clear()
+            selfie(1500, hair = HairStyle.NONE, outName = "ai_skin", tweak = { it.copy(aiSkin = true, matchHeadSkin = true) })
+            assertTrue(calls[1] > 4, "segmenter used on each photo: ${calls[1]}")
+        } finally { skinMode = false; images.clear(); AiModels.sharpen = null; AiModels.denoise = null; AiModels.segment = null }
+    }
+
     /** Face points a face mesh detector would find in [kf]'s photo: pixel x, y and relative depth, plus triangles. */
     fun fakeLandmarks(kf: Keyframe): Pair<RearFace.Landmarks, IntArray> {
         val ci = kf.colorIntrinsics
@@ -421,7 +451,8 @@ class SyntheticScanTest {
     }
 
     fun selfie(target: Int, style: HeadStyle = HeadStyle.REALISTIC, hair: HairStyle = HairStyle.BUZZ, offset: FloatArray = FloatArray(3), outName: String? = null,
-               recolor: Pair<Float?, Float>? = null, wideFace: Boolean = false, measure: Boolean = false, emptyMasks: Boolean = false): ScanResult {
+               recolor: Pair<Float?, Float>? = null, wideFace: Boolean = false, measure: Boolean = false, emptyMasks: Boolean = false,
+               tweak: (ScanSettings) -> ScanSettings = { it }): ScanResult {
         // Face frame = head centre c, +Z out of the face. Build a face mesh grid by ray casting the front of the scene.
         val gx = 30; val gy = 36
         val fv = FloatArray(gx * gy * 3)
@@ -466,9 +497,9 @@ class SyntheticScanTest {
             }
             SilhouetteView(mask, w, h, kf.colorIntrinsics.scaledTo(w, h), kf.worldToCam)
         }
-        val res0 = HeadScanPipeline(ScanSettings(targetTriangles = target, style = style, hairStyle = hair,
+        val res0 = HeadScanPipeline(tweak(ScanSettings(targetTriangles = target, style = style, hairStyle = hair,
             faceOffsetX = offset[0], faceOffsetY = offset[1], faceOffsetZ = offset[2],
-        )).runSelfie(
+        ))).runSelfie(
             kfs, fv, tris.toIntArray(), { images[it.colorRef]!! }, silhouettes = sil,
         )
         var res = res0

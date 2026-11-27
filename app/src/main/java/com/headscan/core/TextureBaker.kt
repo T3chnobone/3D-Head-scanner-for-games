@@ -112,6 +112,12 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
 
     val texelCount get() = texelIndex.size
 
+    /** Segmenter class of each texel from its best photo (see [SkinLabels]); -1 = none. */
+    private val bestLabel = ByteArray(texelIndex.size) { -1 }
+
+    /** The segmenter classes the photos gave the surface, as a 3D grid; null if no labelled photo was added. */
+    fun labelGrid(): LabelGrid? = LabelGrid.build(texelPos, bestLabel)
+
     private val scratch = object : ThreadLocal<FloatArray>() { override fun initialValue() = FloatArray(3) }
 
     /**
@@ -124,7 +130,8 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
      *
      * @param occlusionTolerance metres a point may lie behind the measured depth and still count as visible.
      */
-    fun addView(kf: Keyframe, image: RgbImage, occlusionTolerance: Float = 0.03f, minCos: Float = 0.2f, quality: Float = 1f) {
+    fun addView(kf: Keyframe, image: RgbImage, occlusionTolerance: Float = 0.03f, minCos: Float = 0.2f, quality: Float = 1f,
+                labels: SkinLabels? = null) {
         val m = kf.worldToCam
         val ci = kf.colorIntrinsics.scaledTo(image.width, image.height)
         val di = kf.depthIntrinsics
@@ -161,7 +168,10 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
             // Image pixels per metre of surface here; beyond the texture's own density it no longer helps.
             val density = min(1f, focal * cos / z / TEXEL_DENSITY)
             val score = cos * sqrt(density) * viewScore
-            if (score > bestScore[t]) bestScore[t] = score
+            if (score > bestScore[t]) {
+                bestScore[t] = score
+                if (labels != null) bestLabel[t] = labels.at(u, v).toByte()
+            }
             val s2 = score * score
             val s4 = s2 * s2
             var wt = s4 * s4 * s4 * edgeW      // score^12

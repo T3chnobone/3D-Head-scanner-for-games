@@ -32,6 +32,12 @@ data class ScanSettings(
     val faceOffsetZ: Float = 0f,
     /** Selfie mode only: skull measured from the photos (null = measure it if outlines are given, else average). */
     val headShape: HeadShape? = null,
+    /** Selfie mode only: AI sharpen / denoise of the photo face (needs [AiModels.sharpen] / [AiModels.denoise]). */
+    val enhance: Enhance = Enhance.NONE,
+    /** Selfie mode only: AI segmenter tells skin from hair, eyebrows and clothes when measuring and evening the skin. */
+    val aiSkin: Boolean = false,
+    /** Selfie mode only: shift the painted head skin onto the finished face colour. */
+    val matchHeadSkin: Boolean = false,
 )
 
 /** Visual style of the generated head. */
@@ -203,18 +209,27 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
     private class HairFill(val head: SelfieHead) {
         var hair = 0xFF3A2A1E.toInt()
         var skin = 0xFFC89F86.toInt()
+        /** AI segmenter classes of the surface, when [ScanSettings.aiSkin] is on. */
+        var labels: LabelGrid? = null
+        fun isSkin(x: Float, y: Float, z: Float) = labels?.skinOrUnknown(x, y, z) ?: true
         fun prepare(baker: TextureBaker) {
+            labels = baker.labelGrid() ?: labels
             val h = head.maxY - head.minY
             baker.robustSeenColor { x, y, z ->
-                if (head.faceMask(x, y, z) < 0.9f) return@robustSeenColor false
+                if (head.faceMask(x, y, z) < 0.9f || !isSkin(x, y, z)) return@robustSeenColor false
                 val ax = kotlin.math.abs(x)
                 val cheek = y > head.minY + 0.38f * h && y < head.minY + 0.55f * h && ax > 0.022f && ax < 0.048f
                 val forehead = y > head.minY + 0.78f * h && y < head.maxY - 0.015f && ax < 0.03f
                 cheek || forehead
             }?.let { skin = it }
-            baker.robustSeenColor(30) { x, y, z ->
+            val lab = labels
+            // With the segmenter: hair is wherever it saw hair above the eyes; otherwise just above the forehead.
+            val aiHair = if (lab == null) null else baker.robustSeenColor(30) { x, y, z ->
+                y > head.minY + 0.7f * h && z > head.headCz - 0.3f * head.rz && lab.at(x, y, z) == SkinLabels.HAIR
+            }
+            (aiHair ?: baker.robustSeenColor(30) { x, y, z ->
                 y > head.maxY + 0.004f && y < head.maxY + 0.035f && z > head.headCz && kotlin.math.abs(x) < 0.05f
-            }?.let { hair = it }
+            })?.let { hair = it }
         }
 
         private fun mix(a: Int, b: Int, t: Float): Int {
@@ -317,9 +332,15 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         }
         val baker = TextureBaker(mesh, normals, atlas)
         val quality = TextureBaker.qualities(keyframes)
+        val segment = if (hairFill != null && s.aiSkin) AiModels.segment else null
         keyframes.forEachIndexed { i, kf ->
-            progress("Projecting photo ${i + 1}/${keyframes.size}", 0.55f + 0.4f * i / keyframes.size)
-            baker.addView(kf, colorSource.load(kf), quality = quality[i])
+            progress("Projecting photo ${i + 1}/${keyframes.size}", 0.55f + 0.3f * i / keyframes.size)
+            val img = colorSource.load(kf)
+            val labels = if (segment != null) {
+                progress("AI skin detection ${i + 1}/${keyframes.size}", 0.55f + 0.3f * i / keyframes.size)
+                try { SkinLabels.of(img, kf, segment) } catch (e: Exception) { null }
+            } else null
+            baker.addView(kf, img, quality = quality[i], labels = labels)
         }
         hairFill?.prepare(baker)
         val texture = if (hairFill != null) baker.finish(
@@ -327,6 +348,19 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             overrideColor = { x, y, z, seen -> hairFill.override(x, y, z, seen) },
         ) else baker.finish()
         if (hairFill != null) improveSkin(baker, texture, hairFill)
+        val net = if (hairFill == null) null else when (s.enhance) {
+            Enhance.SHARPEN -> AiModels.sharpen
+            Enhance.DENOISE -> AiModels.denoise
+            Enhance.NONE -> null
+        }
+        if (net != null && hairFill != null) {
+            val head = hairFill.head
+            val label = if (s.enhance == Enhance.SHARPEN) "AI sharpen" else "AI denoise"
+            val mask = baker.texelMap { x, y, z -> smoothstep(0.2f, 0.7f, head.faceMask(x, y, z)) }
+            try {
+                TextureEnhance.apply(texture, s.textureSize, mask, net) { p -> progress("$label (Real-ESRGAN) ${(p * 100).toInt()}%", 0.86f + 0.1f * p) }
+            } catch (e: Exception) { /* keep the un-enhanced texture */ }
+        }
         if (s.style == HeadStyle.GOLDENEYE_SOURCE) {
             baker.bakeShading(texture, SourceStyle.vertexOcclusion(mesh, normals), SourceStyle::shade)
             SourceStyle.grade(texture, s.textureSize)
@@ -358,17 +392,17 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         val skinLuma = 0.299f * ((sk shr 16) and 255) + 0.587f * ((sk shr 8) and 255) + 0.114f * (sk and 255)
         // Take the lighting out of the photo: plain skin only for the fit (not eyes, brows, lips or hair).
         baker.removeLighting(texture, faceAmt, skinLuma) { x, y, z ->
-            !head.isDetailArea(x, y, z) && head.hairColorAmount(x, y, z) < 0.05f && y < head.maxY - 0.02f
+            !head.isDetailArea(x, y, z) && head.hairColorAmount(x, y, z) < 0.05f && y < head.maxY - 0.02f && hf.isSkin(x, y, z)
         }
         baker.mirrorWeakSide(texture, (head.minX + head.maxX) / 2) { x, y, z -> head.faceMask(x, y, z) > 0.5f }
         // Carry the real skin colour at the edge of the face out onto the sides of the head (cheeks, temples,
         // towards the ears) so there's no colour change at the face edge.
-        extendFaceColour(baker, texture, head)
+        extendFaceColour(baker, texture, hf)
         val h = head.maxY - head.minY
-        matchHeadSkinToFace(baker, texture, head)
+        if (settings.matchHeadSkin) matchHeadSkinToFace(baker, texture, hf)
         val patchSize = 40
         val patch = baker.skinDetailPatch(texture, { x, y, z ->
-            head.faceMask(x, y, z) > 0.95f && y > head.minY + 0.3f * h && y < head.minY + 0.5f * h &&
+            head.faceMask(x, y, z) > 0.95f && hf.isSkin(x, y, z) && y > head.minY + 0.3f * h && y < head.minY + 0.5f * h &&
                 kotlin.math.abs(x - (head.minX + head.maxX) / 2) > 0.2f * (head.maxX - head.minX)
         }, patchSize) ?: return
         val tile = 0.03f     // metres covered by one repeat of the patch
@@ -392,12 +426,13 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
      * could be lighter or pinker than the finished face. Measure both now and shift the head skin onto the face's
      * colour (away from the face edge, where [extendFaceColour] already carries the real colour across).
      */
-    private fun matchHeadSkinToFace(baker: TextureBaker, texture: IntArray, head: SelfieHead) {
+    private fun matchHeadSkinToFace(baker: TextureBaker, texture: IntArray, hf: HairFill) {
+        val head = hf.head
         val h = head.maxY - head.minY
         val face = ArrayList<Int>(); val rest = ArrayList<Int>()
         baker.mapTexels(texture) { x, y, z, _, _, _, c ->
             val hair = head.hairColorAmount(x, y, z)
-            if (hair < 0.05f && !head.isDetailArea(x, y, z)) {
+            if (hair < 0.05f && !head.isDetailArea(x, y, z) && hf.isSkin(x, y, z)) {
                 val m = head.faceMask(x, y, z)
                 val ax = kotlin.math.abs(x - (head.minX + head.maxX) / 2)
                 if (m > 0.9f && ((y > head.minY + 0.38f * h && y < head.minY + 0.55f * h && ax > 0.022f && ax < 0.048f) ||
@@ -423,7 +458,8 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
     private fun extensionWeight(head: SelfieHead, x: Float, y: Float, z: Float): Float =
         (1f - smoothstep(0.015f, 0.06f, head.distanceOutsideFace(x, y))) * smoothstep(head.headCz - 0.5f * head.rz, head.headCz - 0.1f * head.rz, z)
 
-    private fun extendFaceColour(baker: TextureBaker, texture: IntArray, head: SelfieHead) {
+    private fun extendFaceColour(baker: TextureBaker, texture: IntArray, hf: HairFill) {
+        val head = hf.head
         val step = 0.003f; val margin = 0.07f
         val x0 = head.minX - margin; val y0 = head.minY - margin
         val w = ((head.maxX - head.minX + 2 * margin) / step).toInt() + 1
@@ -432,7 +468,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         // Photo colour just inside the face edge, by position across the face.
         baker.mapTexels(texture) { x, y, z, _, _, _, c ->
             val m = head.faceMask(x, y, z)
-            if (m in 0.55f..0.97f && head.hairColorAmount(x, y, z) < 0.05f && !head.isDetailArea(x, y, z)) {
+            if (m in 0.55f..0.97f && head.hairColorAmount(x, y, z) < 0.05f && !head.isDetailArea(x, y, z) && hf.isSkin(x, y, z)) {
                 val i = ((x - x0) / step).toInt(); val j = ((y - y0) / step).toInt()
                 if (i in 0 until w && j in 0 until h) {
                     val k = j * w + i

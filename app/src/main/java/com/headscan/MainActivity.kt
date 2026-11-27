@@ -134,8 +134,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var hairStyle = HairStyle.SIDE_PART
     private lateinit var hairGroup: View
     private lateinit var editPanel: View
-    private lateinit var editBars: List<SeekBar>
-    private var shapeSize = 1f
+    /** AI post-process options from the preview's Post process list (only one post process at a time). */
+    private var postEnhance = com.headscan.core.Enhance.NONE
+    private var postAiSkin = false
+    /** "Match head skin to face" button on the preview. */
+    private var matchSkin = false
+    private lateinit var matchButton: android.widget.Button
     private var lastFit: com.headscan.core.HeadFit.Result? = null
     private var rearInput: Pair<List<Keyframe>, FloatArray>? = null      // kept so the preview can rebuild a rear scan
     private lateinit var editPost: android.widget.Spinner
@@ -198,6 +202,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         // The head model (shape AI) loads in the background; until it's ready the simple head is used.
         lifecycleScope.launch(Dispatchers.IO) {
             if (HeadModel.default == null) HeadModel.default = try { assets.open("ict_head.bin").use { HeadModel.load(it) } } catch (e: Throwable) { null }
+            try { AiNets.install(this@MainActivity) } catch (e: Throwable) { /* AI post process options are skipped */ }
         }
         qualityGroup.setOnCheckedChangeListener { _, id ->
             targetTriangles = if (id == R.id.quality_high) HIGH_TRIANGLES else LOW_TRIANGLES
@@ -706,7 +711,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
-            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f)
+            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f, enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin)
         lastSettings = settings
         showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
@@ -782,6 +787,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val settings = lastSettings.copy(
             hairStyle = editHair,
             style = headStyle,
+            enhance = postEnhance,
+            aiSkin = postAiSkin,
+            matchHeadSkin = matchSkin,
         )
         state = State.PROCESSING
         actionButton.isEnabled = false
@@ -826,7 +834,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setMessage("Name for this model:")
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
-                save(result.withHairColor(hairHue, hairTone).scaled(shapeSize, shapeSize, shapeSize), input.text.toString())
+                save(result.withHairColor(hairHue, hairTone), input.text.toString())
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -865,32 +873,26 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         editHairGroup = findViewById(R.id.edit_hair_group)
         editHairSpinner = findViewById(R.id.edit_hair_spinner)
         editPost = findViewById(R.id.edit_postprocess)
-        editBars = listOf(findViewById(R.id.edit_size))
-        val label = findViewById<TextView>(R.id.edit_size_label)
-        editBars[0].setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                val t = (progress - 50) / 50f
-                shapeSize = 1f + t * 0.5f            // 50%..150%
-                label.text = "Size ${(shapeSize * 100).toInt()}%"
-                previewView.setTransform(shapeSize, 0f, 0f, 0f)
-            }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
-        })
-        val postAdapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, listOf("None", "GoldenEye: Source style"))
+        val postAdapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, POST_PROCESSES)
         postAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         editPost.adapter = postAdapter
-        editPost.setSelection(0, false)
+        editPost.setSelection(postIndex(), false)
         editPost.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val style = if (position == 1) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
-                if (style != headStyle) {
-                    headStyle = style
+                if (position != postIndex()) {
+                    setPost(position)
                     if (!suppressEditEvents) markDirty()
                 }
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         }
+        matchButton = findViewById(R.id.edit_match_skin)
+        matchButton.setOnClickListener {
+            matchSkin = !matchSkin
+            updateMatchButton()
+            markDirty()
+        }
+        updateMatchButton()
         setupHairSpinner(editHairSpinner, HairStyle.NONE) { h ->
             if (h != editHair) {
                 editHair = h
@@ -898,8 +900,32 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }
         }
         applyButton.setOnClickListener { applyEdits() }
-        findViewById<View>(R.id.edit_reset).setOnClickListener { editBars[0].progress = 50 }
+        findViewById<View>(R.id.edit_reset).setOnClickListener { previewView.resetZoom() }
         resetShape(HairStyle.NONE)
+    }
+
+    /** Position in the Post process list for the current choice. */
+    private fun postIndex(): Int = when {
+        headStyle == HeadStyle.GOLDENEYE_SOURCE -> 1
+        postEnhance == com.headscan.core.Enhance.SHARPEN -> 2
+        postEnhance == com.headscan.core.Enhance.DENOISE -> 3
+        postAiSkin -> 4
+        else -> 0
+    }
+
+    private fun setPost(position: Int) {
+        headStyle = if (position == 1) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
+        postEnhance = when (position) {
+            2 -> com.headscan.core.Enhance.SHARPEN
+            3 -> com.headscan.core.Enhance.DENOISE
+            else -> com.headscan.core.Enhance.NONE
+        }
+        postAiSkin = position == 4
+    }
+
+    private fun updateMatchButton() {
+        if (!::matchButton.isInitialized) return
+        matchButton.text = if (matchSkin) "Undo head skin match" else "Match head skin to face"
     }
 
     /** The two vertical sliders at the side of the preview: hair colour (rainbow) and tone (dark to light). */
@@ -1012,7 +1038,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         state = State.PROCESSING
         enterProcessing()
         showStatus("Finding the face in the picture…")
-        val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle)
+        val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
+            enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin)
         lastSettings = settings
         lifecycleScope.launch(Dispatchers.Default) {
             try {
@@ -1067,7 +1094,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         HairStyle.SPIKY -> "Spiky"
     }
 
-    private fun defaultProgress(@Suppress("UNUSED_PARAMETER") k: Int): Int = 50
 
     /** A head size or hairstyle change: rebuild the head shortly after the slider stops, no Apply needed. */
     private fun markDirty() {
@@ -1092,6 +1118,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val settings = lastSettings.copy(
             hairStyle = editHair,
             style = headStyle,
+            enhance = postEnhance,
+            aiSkin = postAiSkin,
+            matchHeadSkin = matchSkin,
         )
         editDirty = false
         actionButton.isEnabled = false
@@ -1110,7 +1139,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                         lastSettings = settings
                         pendingResult = result
                         previewView.show(result)
-                        previewView.setTransform(shapeSize, 0f, 0f, 0f)
                         colorSliders.visibility = if (result.canRecolorHair) View.VISIBLE else View.GONE
                         refreshHairColor()
                     }
@@ -1136,10 +1164,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     /** Puts every editor control back to neutral (used for a brand-new scan result). */
     private fun resetShape(hair: HairStyle) {
         suppressEditEvents = true
-        editBars.forEachIndexed { k, b -> b.progress = defaultProgress(k) + 1; b.progress = defaultProgress(k) }   // force change events so labels update
+        previewView.resetZoom()
         editHair = hair
         editHairSpinner.setSelection(HairStyle.values().indexOf(hair))
-        editPost.setSelection(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) 1 else 0, false)
+        editPost.setSelection(postIndex(), false)
+        updateMatchButton()
         suppressEditEvents = false
         editDirty = false
         applyButton.isEnabled = false
@@ -1230,7 +1259,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         previewView.visibility = View.VISIBLE
         previewView.onResume()
         previewView.show(result)
-        previewView.setTransform(shapeSize, 0f, 0f, 0f)
         if (fresh) resetShape(lastSettings.hairStyle)
         editDirty = false
         applyButton.isEnabled = false
@@ -1286,7 +1314,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setPositiveButton("Done") { _, _ ->
                 headStyle = if (styles.checkedRadioButtonId == goldeneye.id) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
                 prefs.edit().putString("style", headStyle.name).apply()
-                if (::editPost.isInitialized) editPost.setSelection(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) 1 else 0, false)
+                if (headStyle == HeadStyle.GOLDENEYE_SOURCE) { postEnhance = com.headscan.core.Enhance.NONE; postAiSkin = false }
+                if (::editPost.isInitialized) editPost.setSelection(postIndex(), false)
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1306,8 +1335,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun previewText(result: ScanResult?): String {
-        val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "No post process"
-        return "Preview · ${result?.triangleCount ?: 0} triangles · ${result?.textureSize ?: 0}px texture · $style\nDrag to spin. " +
+        val style = if (postIndex() == 0) "No post process" else POST_PROCESSES[postIndex()]
+        return "Preview · ${result?.triangleCount ?: 0} triangles · ${result?.textureSize ?: 0}px texture · $style\nDrag to spin, pinch to zoom. " +
             (if (selfieInput != null) headSizeText(result) + "Change the hairstyle or style and the head updates by itself. " +
                 "The side sliders change hair colour and tone. " else "Pick a post process and the head updates by itself. ") +
             "Save it with a name, or discard it."
@@ -1376,14 +1405,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun applyMinimisedSliders() {
-        if (!::editBars.isInitialized) return
-        editBars.forEachIndexed { k, b ->
-            // Each slider sits in its own row (the head rows hold an inner line with the − / + buttons).
-            var row = b.parent as View
-            if (row.parent !== editPanel) row = row.parent as View
-            val show = !minimised
-            row.visibility = if (show) View.VISIBLE else View.GONE
-        }
+        if (!::matchButton.isInitialized) return
+        // Minimised: just the post process list stays, to leave room for the head.
+        matchButton.visibility = if (!minimised && selfieInput != null) View.VISIBLE else View.GONE
     }
 
     /**
@@ -1415,6 +1439,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     companion object {
+        /** Preview Post process list, in [postIndex] order. */
+        private val POST_PROCESSES = listOf("None", "GoldenEye: Source style", "AI sharpen (Real-ESRGAN)", "AI denoise (Real-ESRGAN)", "AI skin detection")
         private const val REQUEST_CAMERA = 1
         private const val IMAGE_HINT = "Image mode: tap Choose photo and pick a clear, well-lit picture of one face looking at the camera. " +
             "The face comes from the picture; the rest of the head is predicted by the head-shape model."
