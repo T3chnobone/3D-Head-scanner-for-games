@@ -2,8 +2,6 @@ name: Build APK
 
 on:
   push:
-  pull_request:
-  workflow_dispatch:
 
 jobs:
   build:
@@ -15,11 +13,9 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v5
-      - name: Unit tests (3D pipeline on a synthetic head)
-        run: ./gradlew --no-daemon testDebugUnitTest
-      - name: Build debug APK
-        run: ./gradlew --no-daemon assembleDebug
-      - uses: actions/upload-artifact@v5
-        with:
-          name: head-scanner-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: deps
+        run: |
+          ./gradlew --no-daemon -q app:dependencies --configuration debugRuntimeClasspath | grep -iE "mlkit|mediapipe|tensorflow|litert|vkp|play-services-tflite" || true
+          for a in face-mesh-detection segmentation-selfie vision-internal-vkp vision-common common; do echo "== $a"; curl -s https://dl.google.com/android/maven2/com/google/mlkit/$a/maven-metadata.xml | grep -o "<version>[^<]*" | tail -8; done
+          for v in 16.0.0-beta1 16.0.0-beta2 16.0.0-beta3; do echo "== face-mesh $v"; curl -s https://dl.google.com/android/maven2/com/google/mlkit/face-mesh-detection/$v/face-mesh-detection-$v.pom | grep -A2 "<artifactId>" | grep -v "^--"; done
+          for v in 16.0.0-beta6 16.0.0-beta5 16.0.0-beta4; do echo "== seg $v"; curl -s https://dl.google.com/android/maven2/com/google/mlkit/segmentation-selfie/$v/segmentation-selfie-$v.pom | grep -A2 "<artifactId>" | grep -v "^--"; done
