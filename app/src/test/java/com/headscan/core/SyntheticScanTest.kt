@@ -327,7 +327,9 @@ class SyntheticScanTest {
                 "opt_hair" to { it.copy(photoHair = true) },
                 "opt_skin" to { it.copy(realSkinFill = true) },
                 "opt_blend" to { it.copy(wideBlend = true) },
-                "opt_all" to { it.copy(wholeHeadPhoto = true, photoHair = true, realSkinFill = true, wideBlend = true) },
+                "opt_scatter" to { it.copy(realSkinFill = true, skinScatter = true) },
+                "opt_tint" to { it.copy(skinTint = true) },
+                "opt_all" to { it.copy(wholeHeadPhoto = true, photoHair = true, realSkinFill = true, wideBlend = true, skinScatter = true, skinTint = true) },
             )
             for ((name, tweak) in variants) {
                 images.clear()

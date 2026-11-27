@@ -145,6 +145,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var dbgRealSkin = false
     private var dbgWideBlend = false
     private var dbgMirrorFace = true
+    private var dbgScatter = false
+    private var dbgTint = false
     private lateinit var matchButton: android.widget.Button
     private var lastFit: com.headscan.core.HeadFit.Result? = null
     private var rearInput: Pair<List<Keyframe>, FloatArray>? = null      // kept so the preview can rebuild a rear scan
@@ -718,7 +720,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val faceTris = if (isSelfie) selfie.triangles else null
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
             faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f, enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin,
-            wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend, mirrorFace = dbgMirrorFace)
+            wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend, mirrorFace = dbgMirrorFace,
+            skinScatter = dbgScatter, skinTint = dbgTint)
         lastSettings = settings
         showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
@@ -802,6 +805,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             realSkinFill = dbgRealSkin,
             wideBlend = dbgWideBlend,
             mirrorFace = dbgMirrorFace,
+            skinScatter = dbgScatter,
+            skinTint = dbgTint,
         )
         state = State.PROCESSING
         actionButton.isEnabled = false
@@ -943,6 +948,14 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     /** The two vertical sliders at the side of the preview: hair colour (rainbow) and tone (dark to light). */
     private fun setupHairColorSliders() {
         colorSliders = findViewById(R.id.color_sliders)
+        // Keep the sliders just below the instructions and the — / ⋮ buttons, so they never cover them
+        // (the instructions change height as their text changes or when minimised).
+        val topPanel = findViewById<View>(R.id.top_panel)
+        topPanel.addOnLayoutChangeListener { _, _, _, _, bottom, _, _, _, _ ->
+            val lp = colorSliders.layoutParams as android.widget.FrameLayout.LayoutParams
+            val want = bottom + (8 * resources.displayMetrics.density).toInt()
+            if (lp.topMargin != want) colorSliders.post { lp.topMargin = want; colorSliders.layoutParams = lp }
+        }
         val hue = findViewById<SeekBar>(R.id.hair_hue)
         val tone = findViewById<SeekBar>(R.id.hair_tone)
         val hueLabel = findViewById<TextView>(R.id.hair_hue_label)
@@ -1052,7 +1065,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         showStatus("Finding the face in the picture…")
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
             enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin,
-            wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend, mirrorFace = dbgMirrorFace)
+            wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend, mirrorFace = dbgMirrorFace,
+            skinScatter = dbgScatter, skinTint = dbgTint)
         lastSettings = settings
         lifecycleScope.launch(Dispatchers.Default) {
             try {
@@ -1139,6 +1153,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             realSkinFill = dbgRealSkin,
             wideBlend = dbgWideBlend,
             mirrorFace = dbgMirrorFace,
+            skinScatter = dbgScatter,
+            skinTint = dbgTint,
         )
         editDirty = false
         actionButton.isEnabled = false
@@ -1334,8 +1350,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val cbSkin = check("3. Real skin where no photo reached", dbgRealSkin)
         val cbBlend = check("4. Wider blend + match head skin", dbgWideBlend)
         val cbMirror = check("5. Mirror weak side of face", dbgMirrorFace)
+        val cbScatter = check("6. Real skin in random pieces (no repeats)", dbgScatter)
+        val cbTint = check("7. Natural skin colour variation", dbgTint)
         box.addView(TextView(this).apply {
-            text = "While a head is being previewed it rebuilds with these straight away. Back to the defaults (1-4 off, 5 on) when the app restarts."
+            text = "While a head is being previewed it rebuilds with these straight away. Back to the defaults (5 on, the rest off) when the app restarts."
             textSize = 12f
             alpha = 0.7f
             setPadding(0, px(6), 0, 0)
@@ -1349,9 +1367,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 if (headStyle == HeadStyle.GOLDENEYE_SOURCE) { postEnhance = com.headscan.core.Enhance.NONE; postAiSkin = false }
                 if (::editPost.isInitialized) editPost.setSelection(postIndex(), false)
                 val changed = cbWhole.isChecked != dbgWholeHead || cbHair.isChecked != dbgPhotoHair ||
-                    cbSkin.isChecked != dbgRealSkin || cbBlend.isChecked != dbgWideBlend || cbMirror.isChecked != dbgMirrorFace
+                    cbSkin.isChecked != dbgRealSkin || cbBlend.isChecked != dbgWideBlend || cbMirror.isChecked != dbgMirrorFace ||
+                    cbScatter.isChecked != dbgScatter || cbTint.isChecked != dbgTint
                 dbgWholeHead = cbWhole.isChecked; dbgPhotoHair = cbHair.isChecked
                 dbgRealSkin = cbSkin.isChecked; dbgWideBlend = cbBlend.isChecked; dbgMirrorFace = cbMirror.isChecked
+                dbgScatter = cbScatter.isChecked; dbgTint = cbTint.isChecked
                 if (changed && state == State.PREVIEW) markDirty()
             }
             .setNegativeButton("Cancel", null)

@@ -48,6 +48,10 @@ data class ScanSettings(
     val wideBlend: Boolean = false,
     /** Selfie mode: copy the better-seen side of the face onto a side the photos only saw at an angle. */
     val mirrorFace: Boolean = true,
+    /** Debug, selfie mode: real skin laid as many small randomly placed and turned pieces (no repeating pattern). */
+    val skinScatter: Boolean = false,
+    /** Debug, selfie mode: natural colour variation on the painted skin (blotches, redder ears, paler scalp, neck). */
+    val skinTint: Boolean = false,
 )
 
 /** Visual style of the generated head. */
@@ -438,7 +442,8 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             head.faceMask(x, y, z) > 0.95f && hf.isSkin(x, y, z) && y > head.minY + 0.3f * h && y < head.minY + 0.5f * h &&
                 kotlin.math.abs(x - (head.minX + head.maxX) / 2) > 0.2f * (head.maxX - head.minX)
         }
-        if (settings.realSkinFill) {
+        if (settings.skinTint) tintSkin(baker, texture, hf)
+        if (settings.realSkinFill || settings.skinScatter) {
             // Any plain skin on the face: cheeks, forehead, chin sides (not eyes, brows, nose, lips).
             val cx = (head.minX + head.maxX) / 2; val fw = head.maxX - head.minX
             val cp = baker.skinColourPatch(texture, { x, y, z ->
@@ -467,27 +472,107 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
     }
 
     /**
+     * Natural colour variation on the painted skin: soft large blotches, redder ears, a paler scalp with very faint
+     * stubble dots, and a slightly darker neck, so the head doesn't look evenly painted.
+     */
+    private fun tintSkin(baker: TextureBaker, texture: IntArray, hf: HairFill) {
+        val head = hf.head
+        fun hash3(i: Int, j: Int, k: Int): Float {
+            var h = i * 374761393 + j * 668265263 + k * 2147483629
+            h = (h xor (h ushr 13)) * 1274126177
+            return ((h xor (h ushr 16)) and 0xFFFFFF) / 16777215f
+        }
+        // Smooth 3D value noise, about -1..1.
+        fun noise(x: Float, y: Float, z: Float, scale: Float, salt: Int): Float {
+            val fx = x / scale; val fy = y / scale; val fz = z / scale
+            val ix = kotlin.math.floor(fx).toInt(); val iy = kotlin.math.floor(fy).toInt(); val iz = kotlin.math.floor(fz).toInt()
+            fun sm(t: Float) = t * t * (3f - 2f * t)
+            val tx = sm(fx - ix); val ty = sm(fy - iy); val tz = sm(fz - iz)
+            var v = 0f
+            for (c in 0 until 8) {
+                val dx = c and 1; val dy = (c shr 1) and 1; val dz = (c shr 2) and 1
+                val w = (if (dx == 1) tx else 1f - tx) * (if (dy == 1) ty else 1f - ty) * (if (dz == 1) tz else 1f - tz)
+                v += w * hash3(ix + dx + salt, iy + dy, iz + dz)
+            }
+            return v * 2f - 1f
+        }
+        val scalpY = head.headCy + 0.35f * head.ry
+        baker.mapTexelsT(texture) { t, x, y, z, _, _, _, c ->
+            val k = (1f - head.faceMask(x, y, z)) * (1f - head.hairColorAmount(x, y, z)) * (1f - hf.photoAt(t))
+            if (k <= 0.02f) return@mapTexelsT c
+            var r = 1f; var g = 1f; var b = 1f
+            // Blotches: brightness and a little redness, at two sizes.
+            val big = noise(x, y, z, 0.07f, 11); val small = noise(x, y, z, 0.025f, 37)
+            val light = 0.035f * big + 0.02f * small
+            val red = 0.025f * noise(x, y, z, 0.04f, 71)
+            r *= 1f + light + red; g *= 1f + light - 0.4f * red; b *= 1f + light - 0.6f * red
+            // Ears: redder and a touch darker in the folds.
+            val ear = 1f - smoothstep(0.001f, 0.004f, head.earSdf(x, y, z))
+            r *= 1f + 0.06f * ear; g *= 1f - 0.03f * ear; b *= 1f - 0.05f * ear
+            // Scalp: slightly paler and less red, with very faint dots where hair would grow.
+            val scalp = smoothstep(scalpY - 0.02f, scalpY + 0.02f, y)
+            if (scalp > 0f) {
+                r *= 1f + 0.01f * scalp; g *= 1f + 0.025f * scalp; b *= 1f + 0.035f * scalp
+                val dot = hash3(kotlin.math.floor(x / 0.0014f).toInt(), kotlin.math.floor(y / 0.0014f).toInt(), kotlin.math.floor(z / 0.0014f).toInt())
+                if (dot < 0.05f) { val d = 1f - 0.06f * scalp; r *= d; g *= d; b *= d }
+            }
+            // Neck: a little darker and warmer below the jaw.
+            val neck = smoothstep(head.minY + 0.01f, head.minY - 0.04f, y)
+            r *= 1f - 0.03f * neck; g *= 1f - 0.05f * neck; b *= 1f - 0.06f * neck
+            fun ch(sh: Int, m: Float): Int { val v = ((c shr sh) and 255).toFloat(); return (v * (1f + (m - 1f) * k)).toInt().coerceIn(0, 255) }
+            (0xFF shl 24) or (ch(16, r) shl 16) or (ch(8, g) shl 8) or ch(0, b)
+        }
+    }
+
+    /**
      * Covers the painted skin (parts no photo saw: back of the head, under the chin...) with real skin: a large patch
      * cut from the cheek, repeated mirror-wise (so it has no seams) and projected along the three axes.
      */
     private fun paintRealSkin(baker: TextureBaker, texture: IntArray, hf: HairFill, cp: Triple<FloatArray, Int, Float>) {
         val head = hf.head
         val (pat, n, metres) = cp
-        fun sample(a: Float, b: Float, k: Int): Float {
-            fun idx(v: Float): Int {
-                val u = ((v / metres) % 2f + 2f) % 2f * n
-                val i = u.toInt().coerceIn(0, 2 * n - 1)
-                return if (i < n) i else 2 * n - 1 - i
-            }
-            return pat[3 * (idx(b) * n + idx(a)) + k]
+        fun idx(v: Float): Int {
+            val u = ((v / metres) % 2f + 2f) % 2f * n
+            val i = u.toInt().coerceIn(0, 2 * n - 1)
+            return if (i < n) i else 2 * n - 1 - i
         }
+        fun tiled(a: Float, b: Float, k: Int): Float = pat[3 * (idx(b) * n + idx(a)) + k]
+        // Scattered: the surface is split into cells smaller than the patch; each cell shows the patch from a random
+        // place and at a random angle, and neighbouring cells blend smoothly, so nothing repeats.
+        val cellSize = metres * 0.4f
+        fun hash(i: Int, j: Int, salt: Int): Float {
+            var h = i * 374761393 + j * 668265263 + salt * 1274126177
+            h = (h xor (h ushr 13)) * 1274126177
+            return ((h xor (h ushr 16)) and 0xFFFFFF) / 16777215f
+        }
+        fun scattered(a: Float, b: Float, k: Int, plane: Int): Float {
+            val fa = a / cellSize - 0.5f; val fb = b / cellSize - 0.5f
+            val i0 = kotlin.math.floor(fa).toInt(); val j0 = kotlin.math.floor(fb).toInt()
+            val ta = fa - i0; val tb = fb - j0
+            var sum = 0f; var w2 = 0f
+            for (dj in 0..1) for (di in 0..1) {
+                val i = i0 + di; val j = j0 + dj
+                val w = (if (di == 0) 1f - ta else ta) * (if (dj == 0) 1f - tb else tb)
+                if (w <= 0f) continue
+                val ang = hash(i, j, plane * 3) * 6.2831853f
+                val ox = hash(i, j, plane * 3 + 1) * metres; val oy = hash(i, j, plane * 3 + 2) * metres
+                val la = a - (i + 0.5f) * cellSize; val lb = b - (j + 0.5f) * cellSize
+                val ca = kotlin.math.cos(ang); val sa = kotlin.math.sin(ang)
+                sum += w * tiled(ca * la - sa * lb + ox, sa * la + ca * lb + oy, k)
+                w2 += w * w
+            }
+            // Blending pieces lowers the contrast: scale it back so the skin grain stays as strong.
+            return if (w2 > 0f) sum / kotlin.math.sqrt(w2) else 0f
+        }
+        fun sample(a: Float, b: Float, k: Int, plane: Int): Float =
+            if (settings.skinScatter) scattered(a, b, k, plane) else tiled(a, b, k)
         baker.mapTexelsT(texture) { t, x, y, z, nx, ny, nz, c ->
             val k = (1f - head.faceMask(x, y, z)) * (1f - head.hairColorAmount(x, y, z)) * (1f - hf.photoAt(t))
             if (k <= 0.02f) return@mapTexelsT c
             val wx = nx * nx; val wy = ny * ny; val wz = nz * nz; val ws = wx + wy + wz
             fun ch(ci: Int): Int {
                 // Different offsets per projection so the three repeats don't line up.
-                val d = (sample(y + 0.013f, z + 0.031f, ci) * wx + sample(x + 0.027f, z + 0.007f, ci) * wy + sample(x, y, ci) * wz) / ws * k
+                val d = (sample(y + 0.013f, z + 0.031f, ci, 0) * wx + sample(x + 0.027f, z + 0.007f, ci, 1) * wy + sample(x, y, ci, 2) * wz) / ws * k
                 return (((c shr (16 - 8 * ci)) and 255) + d).toInt().coerceIn(0, 255)
             }
             (0xFF shl 24) or (ch(0) shl 16) or (ch(1) shl 8) or ch(2)
