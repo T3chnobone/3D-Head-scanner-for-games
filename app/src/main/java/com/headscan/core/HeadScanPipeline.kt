@@ -178,7 +178,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         var fitNote: HeadFit.Result? = null
         if (shape == null && silhouettes != null && silhouettes.isNotEmpty()) {
             progress("Measuring your head from the photos", 0.07f)
-            val avg = SelfieHead(faceVertices, faceTriangles, HairStyle.NONE, floatArrayOf(settings.faceOffsetX, settings.faceOffsetY, settings.faceOffsetZ))
+            val avg = SelfieHead(faceVertices, faceTriangles, HairStyle.NONE, floatArrayOf(settings.faceOffsetX, settings.faceOffsetY, settings.faceOffsetZ), model = null)
             val start = HeadShape(avg.rx, avg.headCy + avg.ry, avg.headCz + avg.rz, avg.headCz - avg.rz)
             fitNote = try { HeadFit.fit(silhouettes, faceVertices, faceTriangles, start, avg.headCy, avg.minY, avg.maxY) } catch (e: Throwable) { null }
             shape = fitNote?.shape
