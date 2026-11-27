@@ -548,32 +548,76 @@ class SelfieHead(
     }
 
     /** Eyes, lips and ears: kept smooth-shaded in the low-poly game look. */
+    /** True when the face mesh is the standard 468-point layout (ARCore / ML Kit face mesh), so its points can be named. */
+    private val namedPoints = verts.size / 3 in 468..478
+    private fun px(i: Int) = verts[3 * i]
+    private fun py(i: Int) = verts[3 * i + 1]
+
+    /** Lips from the face mesh: centre, half width and half height (mouth corners 61 / 291, lip top 0, lip bottom 17). */
+    private val lips: FloatArray? = if (!namedPoints) null else floatArrayOf(
+        (px(61) + px(291)) / 2, (py(0) + py(17)) / 2, abs(px(291) - px(61)) / 2, abs(py(0) - py(17)) / 2)
+
+    /** How much a point is on the ear (0..1). */
+    fun onEar(x: Float, y: Float, z: Float): Float = 1f - smoothstep(0.002f, 0.006f, earSdf(x, y, z))
+
     /**
      * Where facial hair grows (0..1): the cheeks below a line from the sideburn to just under the nose, the upper lip,
-     * chin and jaw, and under the jaw fading out [neckReach] metres down the neck. Not on the lips or behind the ear.
+     * chin and jaw, and under the jaw fading out [neckReach] metres down the neck. Not on the lips or the ears.
+     * Placed from the person's own face points (mouth corners, lips, nose base, chin, jaw, face edge by the ear).
      */
     fun beardZone(x: Float, y: Float, z: Float, neckReach: Float): Float {
+        val s = earScale
+        val behind = smoothstep(earZ - 0.002f * s, earZ + 0.01f * s, z)
+        if (behind <= 0f) return 0f
+        val ear = onEar(x, y, z)
+        if (ear >= 1f) return 0f
+        if (!namedPoints) return genericBeardZone(x, y, z, neckReach) * behind * (1f - ear)
+        val cx = (px(61) + px(291)) / 2
+        // The side of the face this point is on: mouth corner, face edge by the ear, jaw angle.
+        val plusSide = px(291) > px(61)
+        val right = x >= cx
+        val mc = if (right == plusSide) 291 else 61
+        val fe = if (right == plusSide) 454 else 234
+        val ja = if (right == plusSide) 397 else 172
+        val span = abs(px(fe) - cx).coerceAtLeast(0.01f)
+        val u = abs(x - cx) / span                         // 0 at the middle, 1 at the face edge by the ear
+        val um = (abs(px(mc) - cx) / span).coerceIn(0.1f, 0.8f)
+        // Top edge: just under the nose in the middle, a little above the mouth corner, up to the sideburn by the ear.
+        val underNose = py(2) - 0.003f
+        val aboveCorner = py(mc) + 0.45f * (py(2) - py(mc))
+        val sideburn = py(fe) - 0.004f
+        val upper = when {
+            u <= um -> underNose + (aboveCorner - underNose) * (u / um)
+            u <= 1f -> aboveCorner + (sideburn - aboveCorner) * ((u - um) / (1f - um))
+            else -> sideburn
+        }
+        val top = 1f - smoothstep(upper - 0.005f, upper + 0.004f, y)
+        // Bottom edge: chin in the middle, jaw angle at the side, rising towards the ear; then down the neck.
+        val jaw = if (u <= 1f) py(152) + (py(ja) - py(152)) * u else py(ja)
+        val bottom = smoothstep(jaw - neckReach - 0.012f, jaw - neckReach + 0.004f, y)
+        // Lips stay clear.
+        val l = lips!!
+        val lx = (x - l[0]) / (l[2] + 0.003f); val ly = (y - l[1]) / (l[3] + 0.002f)
+        val lipsW = if (z > noseZ - 0.05f) smoothstep(0.9f, 1.15f, sqrt(lx * lx + ly * ly)) else 1f
+        return behind * top * bottom * lipsW * (1f - ear)
+    }
+
+    /** [beardZone] from typical proportions, when the face points can't be named. */
+    private fun genericBeardZone(x: Float, y: Float, z: Float, neckReach: Float): Float {
         val h = maxY - minY
         val cx = (minX + maxX) / 2
         val ax = abs(x - cx)
         val s = earScale
         val mouthY = minY + 0.21f * h
         val mouthHalf = 0.22f * faceW
-        // 0 at the ear, 1 at the front of the face
         val front = smoothstep(earZ, noseZ - 0.03f, z)
-        val behind = smoothstep(earZ - 0.002f * s, earZ + 0.01f * s, z)
-        if (behind <= 0f) return 0f
-        // Top edge: sideburn height at the ear, down to just under the nose at the front.
         val upper = earY - 0.004f * s + (minY + 0.31f * h - (earY - 0.004f * s)) * Math.pow(front.toDouble(), 0.7).toFloat()
         val top = 1f - smoothstep(upper - 0.006f, upper + 0.004f, y)
-        // Bottom edge: the jaw line (rises towards the ear), then fades down the neck.
         val jaw = minY + (earY - 0.07f * s - minY) * (1f - front)
         val bottom = smoothstep(jaw - neckReach - 0.012f, jaw - neckReach + 0.004f, y)
-        // Lips stay clear.
         val lx = ax / (1.12f * mouthHalf); val ly = (y - mouthY - 0.003f * h) / (0.04f * h)
-        val lips = smoothstep(0.85f, 1.15f, sqrt(lx * lx + ly * ly))
-        val lipsW = if (z > noseZ - 0.05f) lips else 1f
-        return behind * top * bottom * lipsW
+        val lipsW = if (z > noseZ - 0.05f) smoothstep(0.85f, 1.15f, sqrt(lx * lx + ly * ly)) else 1f
+        return top * bottom * lipsW
     }
 
     fun isDetailArea(x: Float, y: Float, z: Float): Boolean {
@@ -583,6 +627,11 @@ class SelfieHead(
         val cx = (minX + maxX) / 2
         val ex = (abs(x - cx) - 0.23f * faceW) / (0.17f * faceW); val ey = (y - (minY + 0.6f * h)) / (0.1f * h)
         if (ex * ex + ey * ey < 1f) return true
+        val l = lips
+        if (l != null) {
+            val lx = (x - l[0]) / (l[2] + 0.004f); val ly = (y - l[1]) / (l[3] + 0.004f)
+            return lx * lx + ly * ly < 1f
+        }
         val lx = (x - cx) / (0.22f * faceW); val ly = (y - (minY + 0.21f * h)) / (0.09f * h)
         return lx * lx + ly * ly < 1f
     }

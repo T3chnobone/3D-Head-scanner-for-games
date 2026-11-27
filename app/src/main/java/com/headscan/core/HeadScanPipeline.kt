@@ -450,6 +450,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             head.faceMask(x, y, z) > 0.95f && hf.isSkin(x, y, z) && y > head.minY + 0.3f * h && y < head.minY + 0.5f * h &&
                 kotlin.math.abs(x - (head.minX + head.maxX) / 2) > 0.2f * (head.maxX - head.minX)
         }
+        earSkin(baker, texture, hf)
         if (settings.skinTint) tintSkin(baker, texture, hf)
         if (settings.realSkinFill || settings.skinScatter) {
             // Any plain skin on the face: cheeks, forehead, chin sides (not eyes, brows, nose, lips).
@@ -469,7 +470,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             return patch[(v.toInt() % patchSize) * patchSize + (u.toInt() % patchSize)]
         }
         baker.mapTexelsT(texture) { t, x, y, z, nx, ny, nz, c ->
-            val k = (1f - head.faceMask(x, y, z)) * (1f - head.hairColorAmount(x, y, z)) * (1f - hf.photoAt(t))
+            val k = (1f - head.faceMask(x, y, z)) * (1f - head.hairColorAmount(x, y, z)) * (1f - hf.photoAt(t)) * (1f - head.onEar(x, y, z))
             if (k <= 0.02f) return@mapTexelsT c
             // triplanar: blend the patch projected along the three axes by the normal
             val wx = nx * nx; val wy = ny * ny; val wz = nz * nz
@@ -529,18 +530,31 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             hh = (hh xor (hh ushr 13)) * 1274126177
             return ((hh xor (hh ushr 16)) and 0xFFFFFF) / 16777215f
         }
+        // Smooth value noise 0..1 (trilinear between hashed lattice points).
+        fun vnoise(fx: Float, fy: Float, fz: Float): Float {
+            val ix = kotlin.math.floor(fx).toInt(); val iy = kotlin.math.floor(fy).toInt(); val iz = kotlin.math.floor(fz).toInt()
+            fun sm(t: Float) = t * t * (3f - 2f * t)
+            val tx = sm(fx - ix); val ty = sm(fy - iy); val tz = sm(fz - iz)
+            var v = 0f
+            for (c in 0 until 8) {
+                val dx = c and 1; val dy = (c shr 1) and 1; val dz = (c shr 2) and 1
+                v += (if (dx == 1) tx else 1f - tx) * (if (dy == 1) ty else 1f - ty) * (if (dz == 1) tz else 1f - tz) * hash3(ix + dx, iy + dy, iz + dz)
+            }
+            return v
+        }
         val cr = (colour shr 16) and 255; val cg = (colour shr 8) and 255; val cb = colour and 255
         baker.mapTexelsT(texture) { t, x, y, z, _, _, _, c ->
             var w = head.beardZone(x, y, z, reach) * strength
             if (onlyPainted) w *= (1f - head.faceMask(x, y, z)) * (1f - hf.photoAt(t))
             if (w <= 0.01f) return@mapTexelsT c
-            // Hairs: a coverage tone plus individual dots/strands (strands run downwards for longer beards).
-            val cell = if (style == Beard.STUBBLE) 0.0008f else 0.0011f
-            val stretch = if (style == Beard.STUBBLE) 1f else 2.5f
-            val d = hash3(kotlin.math.floor(x / cell).toInt(), kotlin.math.floor(y / (cell * stretch)).toInt(), kotlin.math.floor(z / cell).toInt())
-            var a = base + (if (d < dots) (1f - base) * (if (style == Beard.STUBBLE) 0.5f else 0.8f) else 0f)
-            if (style == Beard.FULL) a = a * (0.9f + 0.1f * kotlin.math.sin(x * 900f + kotlin.math.sin(y * 300f) * 2f))
-            val shade = if (style == Beard.FULL) 0.85f + 0.3f * d else 0.9f + 0.2f * d
+            // Hairs: a coverage tone plus a soft hair pattern (smooth noise, no blocks; drawn out downwards for
+            // longer beards so it reads as strands).
+            val cell = if (style == Beard.STUBBLE) 0.0012f else 0.0016f
+            val stretch = if (style == Beard.STUBBLE) 1f else 2.2f
+            val v = 0.6f * vnoise(x / cell, y / (cell * stretch), z / cell) + 0.4f * vnoise(x / (0.5f * cell) + 17f, y / (0.5f * cell * stretch), z / (0.5f * cell))
+            val hairs = smoothstep(1f - dots - 0.12f, 1f - dots + 0.12f, v)
+            val a = base + (1f - base) * hairs * (if (style == Beard.STUBBLE) 0.55f else 0.85f)
+            val shade = 0.85f + 0.3f * v
             val k = (a * w).coerceIn(0f, 1f)
             fun ch(sh: Int, hc: Int) = (((c shr sh) and 255) * (1f - k) + (hc * shade).coerceAtMost(255f) * k).toInt().coerceIn(0, 255)
             (0xFF shl 24) or (ch(16, cr) shl 16) or (ch(8, cg) shl 8) or ch(0, cb)
@@ -582,9 +596,9 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             val light = 0.035f * big + 0.02f * small
             val red = 0.025f * noise(x, y, z, 0.04f, 71)
             r *= 1f + light + red; g *= 1f + light - 0.4f * red; b *= 1f + light - 0.6f * red
-            // Ears: redder and a touch darker in the folds.
-            val ear = 1f - smoothstep(0.001f, 0.004f, head.earSdf(x, y, z))
-            r *= 1f + 0.06f * ear; g *= 1f - 0.03f * ear; b *= 1f - 0.05f * ear
+            // Ears have their own look (see earSkin); no blotches or scalp dots there.
+            val ear = head.onEar(x, y, z)
+            if (ear >= 1f) return@mapTexelsT c
             // Scalp: slightly paler and less red, with very faint dots where hair would grow.
             val scalp = smoothstep(scalpY - 0.02f, scalpY + 0.02f, y)
             if (scalp > 0f) {
@@ -595,7 +609,27 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             // Neck: a little darker and warmer below the jaw.
             val neck = smoothstep(head.minY + 0.01f, head.minY - 0.04f, y)
             r *= 1f - 0.03f * neck; g *= 1f - 0.05f * neck; b *= 1f - 0.06f * neck
-            fun ch(sh: Int, m: Float): Int { val v = ((c shr sh) and 255).toFloat(); return (v * (1f + (m - 1f) * k)).toInt().coerceIn(0, 255) }
+            val ke = k * (1f - ear)
+            fun ch(sh: Int, m: Float): Int { val v = ((c shr sh) and 255).toFloat(); return (v * (1f + (m - 1f) * ke)).toInt().coerceIn(0, 255) }
+            (0xFF shl 24) or (ch(16, r) shl 16) or (ch(8, g) shl 8) or ch(0, b)
+        }
+    }
+
+    /**
+     * Ears get their own skin rather than the head's: a little redder and pinker (thin skin), smooth (no repeated skin
+     * pattern), and darker in the hollows (where the surface faces into the ear) and lighter on the rim.
+     */
+    private fun earSkin(baker: TextureBaker, texture: IntArray, hf: HairFill) {
+        val head = hf.head
+        baker.mapTexelsT(texture) { t, x, y, z, nx, _, nz, c ->
+            val e = head.onEar(x, y, z) * (1f - head.faceMask(x, y, z)) * (1f - hf.photoAt(t)) * (1f - head.hairColorAmount(x, y, z))
+            if (e <= 0.01f) return@mapTexelsT c
+            // Facing outward-sideways = the rim and outer surface; facing forward/back = inside the folds.
+            val side = kotlin.math.abs(nx) / (kotlin.math.abs(nx) + kotlin.math.abs(nz) + 1e-3f)
+            val depth = (head.earSdf(x, y, z) + 0.002f).coerceIn(-0.004f, 0f) / -0.004f     // how far inside the ear shape
+            val light = 0.94f + 0.1f * side - 0.08f * depth
+            val r = 1.07f * light; val g = 0.97f * light; val b = 0.95f * light
+            fun ch(sh: Int, m: Float): Int { val v = ((c shr sh) and 255).toFloat(); return (v * (1f + (m - 1f) * e)).toInt().coerceIn(0, 255) }
             (0xFF shl 24) or (ch(16, r) shl 16) or (ch(8, g) shl 8) or ch(0, b)
         }
     }
@@ -643,7 +677,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         fun sample(a: Float, b: Float, k: Int, plane: Int): Float =
             if (settings.skinScatter) scattered(a, b, k, plane) else tiled(a, b, k)
         baker.mapTexelsT(texture) { t, x, y, z, nx, ny, nz, c ->
-            val k = (1f - head.faceMask(x, y, z)) * (1f - head.hairColorAmount(x, y, z)) * (1f - hf.photoAt(t))
+            val k = (1f - head.faceMask(x, y, z)) * (1f - head.hairColorAmount(x, y, z)) * (1f - hf.photoAt(t)) * (1f - head.onEar(x, y, z))
             if (k <= 0.02f) return@mapTexelsT c
             val wx = nx * nx; val wy = ny * ny; val wz = nz * nz; val ws = wx + wy + wz
             fun ch(ci: Int): Int {
@@ -735,7 +769,8 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             val out = head.distanceOutsideFace(x, y)
             if (out <= 0f && head.faceMask(x, y, z) > 0.6f) return@mapTexelsT c
             if (y < head.minY - 0.03f) return@mapTexelsT c
-            val wgt = extensionWeight(head, x, y, z) * (1f - head.hairColorAmount(x, y, z)) * (1f - head.faceMask(x, y, z)) * (1f - hf.photoAt(t))
+            val wgt = extensionWeight(head, x, y, z) * (1f - head.hairColorAmount(x, y, z)) * (1f - head.faceMask(x, y, z)) * (1f - hf.photoAt(t)) *
+                (1f - head.onEar(x, y, z))
             if (wgt <= 0.01f) return@mapTexelsT c
             val i = ((x - x0) / step).toInt().coerceIn(0, w - 1); val j = ((y - y0) / step).toInt().coerceIn(0, h - 1)
             val k = j * w + i
