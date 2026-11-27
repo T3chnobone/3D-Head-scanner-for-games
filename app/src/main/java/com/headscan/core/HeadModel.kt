@@ -74,13 +74,15 @@ class HeadModel private constructor(
     private val sideL: Int = skull.filter { neutral[3 * it + 1] > 0.03f }.minBy { neutral[3 * it] }
     /** Model-space height below which the neck starts to flare into the shoulders. */
     val neckCutY = -0.095f
+    /** Model-space height of the flat cut at the base of the neck: a slight flare, like a game head. */
+    val neckBaseY = -0.115f
 
     /** Measurements of the skull the fit should match (face frame, metres): from [HeadFit]'s photo outline. */
     class Targets(val cx: Float, val halfWidth: Float, val top: Float, val back: Float)
 
     /** A head fitted to a face: vertex positions in the face frame. */
     class Fitted(val verts: FloatArray, val coeffs: FloatArray, val scale: Float, val rmsMm: Float, val used: Int,
-                 val neckCutY: Float)
+                 val neckCutY: Float, val neckBaseY: Float)
 
     /**
      * Fits the model to the scanned face: shape controls, size, position and a small rotation are adjusted so the
@@ -213,7 +215,7 @@ class HeadModel private constructor(
         }
         val out = FloatArray(n * 3)
         for (i in 0 until n) { rot(i, q); for (a in 0..2) out[3 * i + a] = s * q[a] + t[a] }
-        return Fitted(out, c, s, rms * 1000f, used, s * neckCutY + t[1])
+        return Fitted(out, c, s, rms * 1000f, used, s * neckCutY + t[1], s * neckBaseY + t[1])
     }
 
     /** Unit vertex normals (area-weighted) of a shape. */

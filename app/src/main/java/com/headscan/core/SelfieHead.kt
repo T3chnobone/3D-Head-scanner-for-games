@@ -127,7 +127,7 @@ class SelfieHead(
             rz = (zForehead - back) / 2
             headCz = back + rz
             modelEar = if (nr > 0 && nl > 0) floatArrayOf((ear[0] / nr + ear[3] / nl) / 2, ear[1] / nr, ear[2] / nr) else null
-            modelSdf = MeshSdf(fit.verts, model.tris, 0.0025f, 0.045f, minY = fit.neckCutY - 0.01f)
+            modelSdf = MeshSdf(fit.verts, model.tris, 0.0025f, 0.045f, minY = fit.neckBaseY - 0.03f)
         } else {
             headCx = -ox
             if (shape == null) {
@@ -153,7 +153,8 @@ class SelfieHead(
         widthScale = (rx / rx0).coerceIn(0.7f, 1.4f)
         neckR = 0.056f * scale * ((widthScale + (rz / rz0).coerceIn(0.7f, 1.4f)) / 2)
         neckCz = headCz - 0.012f * scale
-        neckBottom = minY - 0.10f * scale - oy
+        // With the head model, its own neck is used down to just where it starts to widen into the shoulders.
+        neckBottom = fit?.neckBaseY ?: (minY - 0.10f * scale - oy)
     }
 
     /** Fits [model] to the scanned face (and the skull measured from the photos, if any), in the face frame. */
@@ -170,7 +171,7 @@ class SelfieHead(
         if (f.used < 200 || f.rmsMm > 6f) return null
         // The face offset moves the face on the head, i.e. the head the other way.
         if (ox != 0f || oy != 0f || oz != 0f) for (i in 0 until model.n) { f.verts[3 * i] -= ox; f.verts[3 * i + 1] -= oy; f.verts[3 * i + 2] -= oz }
-        return HeadModel.Fitted(f.verts, f.coeffs, f.scale, f.rmsMm, f.used, f.neckCutY - oy)
+        return HeadModel.Fitted(f.verts, f.coeffs, f.scale, f.rmsMm, f.used, f.neckCutY - oy, f.neckBaseY - oy)
     }
 
     /** Face depth at (x, y) for fitting: out = z, confidence, dz/dx, dz/dy; false where there is no face. */
@@ -303,17 +304,14 @@ class SelfieHead(
     fun genericSdf(x: Float, y: Float, z: Float): Float {
         modelSdf?.let { m ->
             // Below where the model's neck starts to flare into the shoulders, the neck carries straight down.
-            // Eased in over 3 cm so there's no step where the straight part starts.
-            val cut = fitted!!.neckCutY; val v = ((y - cut) / 0.015f).coerceAtLeast(0f)
-            val yy = cut + 0.015f * (if (v >= 2f) v else 1f + v * v / 4f)
-            var d = m.sample(x, yy, z)
+            var d = m.sample(x, y, z)
             // The model's ears are thin; thickened a little so they survive the low-poly mesh without holes.
             modelEar?.let { e ->
                 val dx = abs(x - headCx) - e[0]; val dy = y - e[1]; val dz = z - e[2]
                 val r = sqrt(dx * dx + dy * dy + dz * dz)
                 if (r < 0.04f) d -= 0.0018f * (1f - smoothstep(0.025f, 0.04f, r))
             }
-            return max(d, neckBottom - 0.02f - y)
+            return max(d, neckBottom - y)
         }
         val sc = earScale
         // Cranium: main ellipsoid plus a rounded back of the skull (occiput), a little narrower at the temples.
