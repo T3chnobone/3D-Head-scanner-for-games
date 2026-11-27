@@ -54,6 +54,7 @@ import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationExceptio
 import com.headscan.core.ColorSource
 import com.headscan.core.HeadScanPipeline
 import com.headscan.core.HeadModel
+import com.headscan.core.RearFace
 import com.headscan.core.Keyframe
 import com.headscan.core.RgbImage
 import com.headscan.core.ScanException
@@ -186,7 +187,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         selfieMode = prefs.getBoolean("selfie", false)
         imageMode = prefs.getBoolean("image", false)
-        hairGroup.visibility = if (selfieMode || imageMode) View.VISIBLE else View.GONE
+        hairGroup.visibility = View.VISIBLE     // every mode now builds the head from the head model, with a hairstyle
         targetTriangles = prefs.getInt("triangles", LOW_TRIANGLES)
         val qualityGroup = findViewById<RadioGroup>(R.id.quality_group)
         qualityGroup.check(if (targetTriangles == HIGH_TRIANGLES) R.id.quality_high else R.id.quality_low)
@@ -246,7 +247,6 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         session?.close()
         session = null
         selfieMode = useSelfie
-        hairGroup.visibility = if (useSelfie || imageMode) View.VISIBLE else View.GONE
         prefs.edit().putBoolean("selfie", useSelfie).apply()
         lastHint = ""
         viewportChanged = true
@@ -691,10 +691,25 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 val onProgress = { msg: String, p: Float ->
                     runOnUiThread { showStatus("Building 3D model$detailNote…\n$msg"); progressBar.progress = (p * 100).toInt() }
                 }
-                val pipeline = HeadScanPipeline(settings)
+                var pipeline = HeadScanPipeline(settings)
+                // Rear camera: find the face in the scan photos, so the head model can be fitted and everything below
+                // the neck (clothes) left out. Falls back to the plain depth scan if no face is found.
+                val rear = if (isSelfie) null else {
+                    runOnUiThread { showStatus("Finding the face in the photos…") }
+                    try {
+                        val found = RearFaces.find(frames)
+                        if (found.landmarks.isEmpty()) null else RearFace.build(frames, found.landmarks, found.triangles)
+                    } catch (e: Throwable) { null }
+                }
+                if (!isSelfie && rear == null) detailNote += " (no face found in the photos: plain depth scan)"
                 val result = if (isSelfie) {
                     if (faceVerts == null || faceTris == null) throw ScanException("No face mesh was captured.")
                     pipeline.runSelfie(frames, faceVerts, faceTris, colorSource, onProgress, silhouettes = outlines)
+                } else if (rear != null) {
+                    pipeline = HeadScanPipeline(settings.copy(headShape = rear.shape))
+                    selfieInput = Triple(rear.keyframes, rear.faceVertices, rear.faceTriangles)
+                    rearInput = null
+                    pipeline.runSelfie(rear.keyframes, rear.faceVertices, rear.faceTriangles, colorSource, onProgress)
                 } else {
                     pipeline.run(frames, center, colorSource, onProgress)
                 }
@@ -940,7 +955,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 val wasImage = imageMode
                 imageMode = false
                 if (wantSelfie != selfieMode) switchCamera(wantSelfie)
-                else if (wasImage) { lastHint = ""; enterAim(); hairGroup.visibility = if (selfieMode) View.VISIBLE else View.GONE; startArSession() }
+                else if (wasImage) { lastHint = ""; enterAim(); startArSession() }
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         }

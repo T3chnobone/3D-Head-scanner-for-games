@@ -1,6 +1,6 @@
 # Head Scanner (Android, ARCore Depth)
 
-Version **0.31**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
+Version **0.32**. The version is shown in the bottom-right corner of the app and set by `versionName` in `app/build.gradle.kts`.
 
 Captures a person's head and neck with the phone's rear camera and exports a textured
 low-poly 3D model:
@@ -20,6 +20,8 @@ In Selfie mode you can also pick a hairstyle for the generic head: **No hair**, 
 **Capture method** is picked from the *Select capture method:* drop-down on the start screen: **Front (selfie)**, **Rear (ARCore)** or **Image**. *Image* builds a head from one picture in your library: ML Kit's on-device face mesh finds the face, the picture becomes the texture, and the rest of the head comes from the head-shape model. Use a clear, well-lit photo of one face looking at the camera.
 
 **Head-shape model (0.28).** In Selfie and Image modes the head is no longer a generic skull: the app fits a statistical head model (the ICT Face Model from USC ICT, MIT licence, built from real light-stage head scans) to your face. Its shape controls are adjusted until its face lies on your scanned face, so the skull, jaw, ears and neck it predicts are in proportion to your face. When your outline was measured from the photos, the model's width, top and back are matched to it too. The model data is `app/src/main/assets/ict_head.bin` (made by `tools/build_ict_asset.py`); its licence is in `app/src/main/assets/ICT_FaceKit_LICENSE.txt`. FLAME isn't used because its licence doesn't allow shipping it in an app.
+
+**Rear camera (0.32).** The rear scan now finds the face in the scan photos (ML Kit face mesh, lifted into 3D with the depth camera), fits the same head-shape model to the face, and measures the skull's width, top and back from the depth readings around the head. Anything below the neck (clothes, shoulders) and the background are left out, the photos only texture the face, and the rest of the head gets matched skin and the chosen hairstyle. If no face is found in the photos, it falls back to the plain depth scan and says so.
 
 Everything runs on the phone. No server, no account.
 

@@ -279,6 +279,66 @@ class SyntheticScanTest {
         } finally { skinMode = false; sideLight = false; images.clear() }
     }
 
+    /** Face points a face mesh detector would find in [kf]'s photo: pixel x, y and relative depth, plus triangles. */
+    fun fakeLandmarks(kf: Keyframe): Pair<RearFace.Landmarks, IntArray> {
+        val ci = kf.colorIntrinsics
+        val gx = 30; val gy = 36
+        val n = gx * gy
+        val wx = FloatArray(n); val wy = FloatArray(n); val wz = FloatArray(n)
+        fun put(k: Int, x: Float, y: Float) { val t = march(c[0] + x, c[1] + y, c[2] + 0.3f, 0f, 0f, -1f); wx[k] = x; wy[k] = y; wz[k] = if (t > 0) 0.3f - t else 0f }
+        for (j in 0 until gy) for (i in 0 until gx) put(j * gx + i, -0.065f + 0.13f * i / (gx - 1), -0.105f + 0.17f * j / (gy - 1))
+        put(33, -0.042f, 0.012f); put(133, -0.018f, 0.012f); put(362, 0.018f, 0.012f); put(263, 0.042f, 0.012f); put(1, 0f, -0.01f)
+        val px = FloatArray(n); val py = FloatArray(n); val pz = FloatArray(n)
+        val w2c = kf.worldToCam
+        for (k in 0 until n) {
+            val X = wx[k] + c[0]; val Y = wy[k] + c[1]; val Z = wz[k] + c[2]
+            val xc = w2c[0] * X + w2c[4] * Y + w2c[8] * Z + w2c[12]
+            val yc = w2c[1] * X + w2c[5] * Y + w2c[9] * Z + w2c[13]
+            val zc = w2c[2] * X + w2c[6] * Y + w2c[10] * Z + w2c[14]
+            px[k] = ci.cx + ci.fx * xc / -zc; py[k] = ci.cy - ci.fy * yc / -zc; pz[k] = -zc * ci.fx / 0.45f
+        }
+        val tris = ArrayList<Int>()
+        fun inFace(k: Int) = (wx[k] / 0.068f).pow(2) + ((wy[k] + 0.02f) / 0.09f).pow(2) <= 1f
+        for (j in 0 until gy - 1) for (i in 0 until gx - 1) {
+            val a = j * gx + i; val b = a + 1; val d = a + gx; val e = d + 1
+            if (listOf(a, b, d, e).all { inFace(it) && it !in setOf(33, 133, 362, 263, 1) }) tris.addAll(listOf(a, e, b, a, d, e))
+        }
+        return RearFace.Landmarks(kf, px, py, pz) to tris.toIntArray()
+    }
+
+    /** Rear camera: the face is found in the front photos, the head model fitted, nothing below the neck kept. */
+    @Test
+    fun rearWithHeadModel() {
+        skinMode = true
+        try {
+            val kfs = ArrayList<Keyframe>(); val found = ArrayList<RearFace.Landmarks>()
+            var tris = IntArray(0)
+            var n = 0
+            for (elev in floatArrayOf(-10f, 15f)) for (az0 in 0 until 270 step 20) {
+                val az = if (az0 > 135) az0 - 270 else az0
+                val a = Math.toRadians(az.toDouble()).toFloat(); val e = Math.toRadians(elev.toDouble()).toFloat()
+                val r = 0.5f
+                val kf = render(lookAt(c[0] + r * cos(e) * sin(a), c[1] + r * sin(e), c[2] + r * cos(e) * cos(a), c[0], c[1] - 0.03f, c[2]), "r${n++}")
+                kfs.add(kf)
+                if (abs(az) <= 20) { val (l, t) = fakeLandmarks(kf); found.add(l); tris = t }
+            }
+            val rf = RearFace.build(kfs, found, tris)
+            assertTrue(rf != null, "face found")
+            val sh = rf.shape
+            println("Rear: ${rf.framesUsed} front views; skull ${sh?.let { "rx=%.3f top=%.3f back=%.3f".format(it.rx, it.top, it.zBack) }}")
+            assertTrue(sh != null && sh.rx in 0.065f..0.09f, "skull width measured")
+            val res = HeadScanPipeline(ScanSettings(targetTriangles = 1500, style = HeadStyle.GOLDENEYE_SOURCE, hairStyle = HairStyle.BUZZ, headShape = sh))
+                .runSelfie(rf.keyframes, rf.faceVertices, rf.faceTriangles, { images[it.colorRef]!! })
+            assertTrue(res.triangleCount in 1400..1500, "triangles ${res.triangleCount}")
+            val out = File("build/rear_model").apply { mkdirs() }
+            File(out, "head.obj").writeText(res.objText())
+            File(out, "head_texture.ppm").outputStream().buffered().use { o ->
+                o.write("P6\n${res.textureSize} ${res.textureSize}\n255\n".toByteArray())
+                for (p in res.texture) { o.write((p shr 16) and 255); o.write((p shr 8) and 255); o.write(p and 255) }
+            }
+        } finally { skinMode = false; images.clear() }
+    }
+
     /** Image mode: one front photo, with the face mesh a face detector would find in it. */
     @Test
     fun imageMode() {
