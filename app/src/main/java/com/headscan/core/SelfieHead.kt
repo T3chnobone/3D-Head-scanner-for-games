@@ -33,6 +33,7 @@ class SelfieHead(
     model: HeadModel? = HeadModel.default,
 ) {
     private val verts = faceVertices
+    private val headModel = model
 
     val minX: Float; val maxX: Float; val minY: Float; val maxY: Float; val noseZ: Float
     private val faceW: Float
@@ -59,6 +60,8 @@ class SelfieHead(
         const val FIT_FADE = 0.03f
         /** Part position for the classic side part, as a fraction of the head half-width (+X side). */
         const val PART_X = 0.35f
+        /** Grid cell for looking up the model's ear points. */
+        const val EAR_CELL = 0.005f
     }
 
     // Height field of the face surface (max z per x/y cell) + blend weight toward the face border.
@@ -557,8 +560,65 @@ class SelfieHead(
     private val lips: FloatArray? = if (!namedPoints) null else floatArrayOf(
         (px(61) + px(291)) / 2, (py(0) + py(17)) / 2, abs(px(291) - px(61)) / 2, abs(py(0) - py(17)) / 2)
 
-    /** How much a point is on the ear (0..1). */
-    fun onEar(x: Float, y: Float, z: Float): Float = 1f - smoothstep(0.002f, 0.006f, earSdf(x, y, z))
+    /**
+     * The fitted head model's own ear points, for telling ear from head skin: (x, y, z, isEar) per point near the ears,
+     * bucketed in a 5 mm grid.
+     */
+    private class EarPoints(val pts: FloatArray, val ear: BooleanArray, val x0: Float, val y0: Float, val z0: Float,
+                            val nx: Int, val ny: Int, val nz: Int, val cells: Array<IntArray?>)
+
+    private val earPoints: EarPoints? by lazy {
+        val fit = fitted ?: return@lazy null
+        val m = headModel ?: return@lazy null
+        val ex = modelEar ?: return@lazy null
+        val v = fit.verts
+        val idx = (0 until m.n).filter { i ->
+            abs(v[3 * i] - headCx) > ex[0] - headCx - 0.035f && abs(v[3 * i + 1] - ex[1]) < 0.06f && abs(v[3 * i + 2] - ex[2]) < 0.06f && !m.isCap(i)
+        }
+        if (idx.none { m.isPinna(it) }) return@lazy null
+        val pts = FloatArray(idx.size * 3) { v[3 * idx[it / 3] + it % 3] }
+        val ear = BooleanArray(idx.size) { k -> m.isPinna(idx[k]) }
+        var x0 = Float.MAX_VALUE; var y0 = Float.MAX_VALUE; var z0 = Float.MAX_VALUE
+        var x1 = -Float.MAX_VALUE; var y1 = -Float.MAX_VALUE; var z1 = -Float.MAX_VALUE
+        for (k in idx.indices) {
+            x0 = min(x0, pts[3 * k]); x1 = max(x1, pts[3 * k]); y0 = min(y0, pts[3 * k + 1]); y1 = max(y1, pts[3 * k + 1])
+            z0 = min(z0, pts[3 * k + 2]); z1 = max(z1, pts[3 * k + 2])
+        }
+        val c = EAR_CELL
+        val nx = ((x1 - x0) / c).toInt() + 1; val ny = ((y1 - y0) / c).toInt() + 1; val nz = ((z1 - z0) / c).toInt() + 1
+        val lists = Array(nx * ny * nz) { IntList(4) }
+        for (k in idx.indices) {
+            val i = ((pts[3 * k] - x0) / c).toInt(); val j = ((pts[3 * k + 1] - y0) / c).toInt(); val l = ((pts[3 * k + 2] - z0) / c).toInt()
+            lists[(l * ny + j) * nx + i].add(k)
+        }
+        EarPoints(pts, ear, x0, y0, z0, nx, ny, nz, Array(lists.size) { if (lists[it].size == 0) null else lists[it].toArray() })
+    }
+
+    /**
+     * How much a point is on the ear (0..1). With the fitted head model this comes from the model's own ear (nearest
+     * model point is an ear point), so it follows the real ear shape and stops where the ear meets the head.
+     */
+    fun onEar(x: Float, y: Float, z: Float): Float {
+        val e = earPoints ?: return 1f - smoothstep(0.002f, 0.006f, earSdf(x, y, z))
+        val c = EAR_CELL
+        val ci = ((x - e.x0) / c).toInt(); val cj = ((y - e.y0) / c).toInt(); val ck = ((z - e.z0) / c).toInt()
+        if (ci < -1 || cj < -1 || ck < -1 || ci > e.nx || cj > e.ny || ck > e.nz) return 0f
+        var de = Float.MAX_VALUE; var dn = Float.MAX_VALUE
+        for (dk in -1..1) for (dj in -1..1) for (di in -1..1) {
+            val i = ci + di; val j = cj + dj; val k = ck + dk
+            if (i < 0 || j < 0 || k < 0 || i >= e.nx || j >= e.ny || k >= e.nz) continue
+            val list = e.cells[(k * e.ny + j) * e.nx + i] ?: continue
+            for (p in list) {
+                val dx = e.pts[3 * p] - x; val dy = e.pts[3 * p + 1] - y; val dz = e.pts[3 * p + 2] - z
+                val d = dx * dx + dy * dy + dz * dz
+                if (e.ear[p]) { if (d < de) de = d } else if (d < dn) dn = d
+            }
+        }
+        if (de == Float.MAX_VALUE) return 0f
+        if (dn == Float.MAX_VALUE) return 1f
+        // Soft 1.5 mm edge where the nearest point changes from head to ear.
+        return smoothstep(-0.0015f, 0.0015f, sqrt(dn) - sqrt(de))
+    }
 
     /**
      * Where facial hair grows (0..1): the cheeks below a line from the sideburn to just under the nose, the upper lip,

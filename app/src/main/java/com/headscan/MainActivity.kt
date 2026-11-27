@@ -147,6 +147,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var dbgMirrorFace = true
     private var dbgScatter = false
     private var dbgTint = false
+    private var dbgEarSkin = true
     /** Fix photo options (⋮ menu), off on each app start. */
     private var fixFacialHair = false
     /** Beard drop-down on the preview. */
@@ -727,7 +728,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
             faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f, enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin,
             wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend, mirrorFace = dbgMirrorFace,
-            skinScatter = dbgScatter, skinTint = dbgTint, beard = editBeard, continueFacialHair = fixFacialHair)
+            skinScatter = dbgScatter, skinTint = dbgTint, beard = editBeard, continueFacialHair = fixFacialHair,
+            earOwnSkin = dbgEarSkin)
         lastSettings = settings
         showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
@@ -815,6 +817,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             skinTint = dbgTint,
             beard = editBeard,
             continueFacialHair = fixFacialHair,
+            earOwnSkin = dbgEarSkin,
         )
         state = State.PROCESSING
         actionButton.isEnabled = false
@@ -1091,7 +1094,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
             enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin,
             wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend, mirrorFace = dbgMirrorFace,
-            skinScatter = dbgScatter, skinTint = dbgTint, beard = editBeard, continueFacialHair = fixFacialHair)
+            skinScatter = dbgScatter, skinTint = dbgTint, beard = editBeard, continueFacialHair = fixFacialHair,
+            earOwnSkin = dbgEarSkin)
         lastSettings = settings
         lifecycleScope.launch(Dispatchers.Default) {
             try {
@@ -1189,6 +1193,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             skinTint = dbgTint,
             beard = editBeard,
             continueFacialHair = fixFacialHair,
+            earOwnSkin = dbgEarSkin,
         )
         editDirty = false
         actionButton.isEnabled = false
@@ -1396,8 +1401,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val cbMirror = check("5. Mirror weak side of face", dbgMirrorFace)
         val cbScatter = check("6. Real skin in random pieces (no repeats)", dbgScatter)
         val cbTint = check("7. Natural skin colour variation", dbgTint)
+        val cbEar = check("8. Ears keep their own skin", dbgEarSkin)
         box.addView(TextView(this).apply {
-            text = "While a head is being previewed it rebuilds with these straight away. Back to the defaults (5 on, the rest off) when the app restarts."
+            text = "While a head is being previewed it rebuilds with these straight away. Back to the defaults (5 and 8 on, the rest off) when the app restarts."
             textSize = 12f
             alpha = 0.7f
             setPadding(0, px(6), 0, 0)
@@ -1412,11 +1418,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 if (::editPost.isInitialized) editPost.setSelection(postIndex(), false)
                 val changed = cbWhole.isChecked != dbgWholeHead || cbHair.isChecked != dbgPhotoHair ||
                     cbSkin.isChecked != dbgRealSkin || cbBlend.isChecked != dbgWideBlend || cbMirror.isChecked != dbgMirrorFace ||
-                    cbScatter.isChecked != dbgScatter || cbTint.isChecked != dbgTint || cbFacialHair.isChecked != fixFacialHair
+                    cbScatter.isChecked != dbgScatter || cbTint.isChecked != dbgTint || cbFacialHair.isChecked != fixFacialHair ||
+                    cbEar.isChecked != dbgEarSkin
                 dbgWholeHead = cbWhole.isChecked; dbgPhotoHair = cbHair.isChecked
                 dbgRealSkin = cbSkin.isChecked; dbgWideBlend = cbBlend.isChecked; dbgMirrorFace = cbMirror.isChecked
                 dbgScatter = cbScatter.isChecked; dbgTint = cbTint.isChecked
-                fixFacialHair = cbFacialHair.isChecked
+                fixFacialHair = cbFacialHair.isChecked; dbgEarSkin = cbEar.isChecked
                 if (changed && state == State.PREVIEW) markDirty()
             }
             .setNegativeButton("Cancel", null)

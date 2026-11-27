@@ -329,6 +329,7 @@ class SyntheticScanTest {
                 "opt_blend" to { it.copy(wideBlend = true) },
                 "opt_scatter" to { it.copy(realSkinFill = true, skinScatter = true) },
                 "opt_tint" to { it.copy(skinTint = true) },
+                "ear_off" to { it.copy(earOwnSkin = false) },
                 "beard_stubble" to { it.copy(beard = Beard.STUBBLE) },
                 "beard_short" to { it.copy(beard = Beard.SHORT) },
                 "beard_full" to { it.copy(beard = Beard.FULL, continueFacialHair = true) },

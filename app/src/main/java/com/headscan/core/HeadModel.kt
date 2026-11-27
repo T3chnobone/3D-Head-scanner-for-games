@@ -274,6 +274,22 @@ class HeadModel private constructor(
     }
 
     fun isEar(i: Int) = has(i, EAR)
+
+    /**
+     * The outer ear itself (rim, bowl and the lobe), from the average head: what lies inside the ear's outline seen from
+     * the side and out at the side of the head, but not the cheek skin in front of the ear that the [EAR] marking also
+     * takes in. Fits the shape of the fitted head too, since identity changes move these points with the ear.
+     */
+    private val pinnaMask: BooleanArray by lazy {
+        val v = shape(FloatArray(k))
+        BooleanArray(n) { i ->
+            if (has(i, CAP)) return@BooleanArray false
+            val ax = kotlin.math.abs(v[3 * i]); val y = v[3 * i + 1]; val z = v[3 * i + 2]
+            val ez = (z + 0.001f) / 0.0175f; val ey = (y - 0.01f) / 0.031f
+            ax > 0.06f && ez * ez + ey * ey < 1f && z < 0.013f
+        }
+    }
+    fun isPinna(i: Int) = pinnaMask[i]
     fun isFace(i: Int) = has(i, FACE)
     fun isCap(i: Int) = has(i, CAP)
 }

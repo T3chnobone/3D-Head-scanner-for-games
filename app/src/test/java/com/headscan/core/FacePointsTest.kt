@@ -36,6 +36,23 @@ class FacePointsTest {
         assertTrue(chin > 0.5f && belowLip > 0.5f, "beard on the chin: $chin $belowLip")
         assertTrue(jawL > 0.5f && jawR > 0.5f, "beard along the jaw: $jawL $jawR")
         assertTrue(cheekBone < 0.05f && forehead < 0.01f && nose < 0.05f && underEye < 0.05f, "none on the upper face")
+        // Ears: the model's own ear points count as ear, the head skin right round them doesn't.
+        val fit = head.fitted!!; val m = HeadModel.default!!
+        var earSum = 0f; var earN = 0; var nearSum = 0f; var nearN = 0
+        val ears = (0 until m.n).filter { m.isPinna(it) }
+        for (i in 0 until m.n) {
+            if (m.isCap(i)) continue
+            val x = fit.verts[3 * i]; val y = fit.verts[3 * i + 1]; val z = fit.verts[3 * i + 2]
+            val e = head.onEar(x, y, z)
+            if (m.isPinna(i)) { earSum += e; earN++ }
+            else {
+                val d = ears.minOf { j -> val dx = fit.verts[3 * j] - x; val dy = fit.verts[3 * j + 1] - y; val dz = fit.verts[3 * j + 2] - z; dx * dx + dy * dy + dz * dz }
+                if (d in 0.008f * 0.008f..0.03f * 0.03f) { nearSum += e; nearN++ }
+            }
+        }
+        println("ear points ${earSum / earN}, head skin 8-30 mm from the ear ${nearSum / nearN} ($nearN)")
+        assertTrue(earSum / earN > 0.8f, "ear points count as ear")
+        assertTrue(nearSum / nearN < 0.05f, "head skin round the ear doesn't")
         // The lips are a detail area (kept out of skin evening) where the face points put them.
         assertTrue(head.isDetailArea(v[3 * 13], v[3 * 13 + 1], v[3 * 13 + 2]))
     }
