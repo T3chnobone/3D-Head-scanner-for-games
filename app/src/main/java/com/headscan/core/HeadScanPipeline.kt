@@ -172,7 +172,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         /** The person's outline in the photos, for measuring the head (see [HeadFit]). */
         silhouettes: List<SilhouetteView>? = null,
     ): ScanResult {
-        if (keyframes.size < 3) throw ScanException("Need at least 3 captured views, got ${keyframes.size}.")
+        if (keyframes.isEmpty()) throw ScanException("No photos to build the head from.")
         progress("Fitting head to your face", 0.05f)
         var shape = settings.headShape
         var fitNote: HeadFit.Result? = null

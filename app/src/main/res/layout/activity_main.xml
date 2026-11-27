@@ -176,30 +176,27 @@
             android:layout_marginBottom="8dp"
             android:orientation="vertical">
 
-            <RadioGroup
-                android:id="@+id/mode_group"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <RadioButton
-                    android:id="@+id/mode_rear"
-                    android:layout_width="0dp"
+                <TextView
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:buttonTint="@android:color/white"
-                    android:text="Full head (rear camera)"
-                    android:textColor="@android:color/white" />
+                    android:layout_marginEnd="8dp"
+                    android:text="Select capture method:"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
 
-                <RadioButton
-                    android:id="@+id/mode_selfie"
+                <Spinner
+                    android:id="@+id/mode_spinner"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:buttonTint="@android:color/white"
-                    android:text="Selfie (front camera)"
-                    android:textColor="@android:color/white" />
-            </RadioGroup>
+                    android:backgroundTint="@android:color/white" />
+            </LinearLayout>
 
             <RadioGroup
                 android:id="@+id/quality_group"

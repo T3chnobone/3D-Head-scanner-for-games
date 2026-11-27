@@ -53,6 +53,7 @@ import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
 import com.headscan.core.ColorSource
 import com.headscan.core.HeadScanPipeline
+import com.headscan.core.HeadModel
 import com.headscan.core.Keyframe
 import com.headscan.core.RgbImage
 import com.headscan.core.ScanException
@@ -120,6 +121,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private lateinit var optionsPanel: View
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
     @Volatile private var selfieMode = false
+    /** Image mode: the head is built from one picture chosen from the library (no camera). */
+    private var imageMode = false
+    private val pickImage = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) processImage(uri)
+    }
     private var targetTriangles = LOW_TRIANGLES
     private lateinit var selfie: SelfieCapture
     private var headStyle = HeadStyle.REALISTIC
@@ -173,21 +179,21 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             hairStyle = h
             prefs.edit().putString("hair", h.name).apply()
         }
-        hairGroup.visibility = if (selfieMode) View.VISIBLE else View.GONE
         setupShapeEditor()
         setupHairColorSliders()
         findViewById<View>(R.id.settings_button).setOnClickListener { showSettings() }
         findViewById<TextView>(R.id.minimise_button).setOnClickListener { v -> setMinimised(!minimised, v as TextView) }
 
         selfieMode = prefs.getBoolean("selfie", false)
+        imageMode = prefs.getBoolean("image", false)
+        hairGroup.visibility = if (selfieMode || imageMode) View.VISIBLE else View.GONE
         targetTriangles = prefs.getInt("triangles", LOW_TRIANGLES)
-        val modeGroup = findViewById<RadioGroup>(R.id.mode_group)
         val qualityGroup = findViewById<RadioGroup>(R.id.quality_group)
-        modeGroup.check(if (selfieMode) R.id.mode_selfie else R.id.mode_rear)
         qualityGroup.check(if (targetTriangles == HIGH_TRIANGLES) R.id.quality_high else R.id.quality_low)
-        modeGroup.setOnCheckedChangeListener { _, id ->
-            val newSelfie = id == R.id.mode_selfie
-            if (newSelfie != selfieMode) switchCamera(newSelfie)
+        setupModeSpinner(findViewById(R.id.mode_spinner))
+        // The head model (shape AI) loads in the background; until it's ready the simple head is used.
+        lifecycleScope.launch(Dispatchers.IO) {
+            if (HeadModel.default == null) HeadModel.default = try { assets.open("ict_head.bin").use { HeadModel.load(it) } } catch (e: Throwable) { null }
         }
         qualityGroup.setOnCheckedChangeListener { _, id ->
             targetTriangles = if (id == R.id.quality_high) HIGH_TRIANGLES else LOW_TRIANGLES
@@ -205,7 +211,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         actionButton.setOnClickListener {
             when (state) {
-                State.AIM -> { startRequestedMs = SystemClock.uptimeMillis(); lastHint = ""; startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Looking for the head…") }
+                State.AIM -> if (imageMode) pickImage.launch("image/*") else { startRequestedMs = SystemClock.uptimeMillis(); lastHint = ""; startRequested = true; showStatus(if (selfieMode) "Looking for your face…" else "Looking for the head…") }
                 State.CAPTURING -> requestFinish()
                 State.PREVIEW -> askNameAndSave()
                 State.DONE -> resetScan()
@@ -229,6 +235,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         super.onResume()
         if (state == State.PREVIEW || state == State.DONE) previewView.onResume()
         if (state != State.AIM && state != State.CAPTURING) return
+        if (imageMode && state == State.AIM) return
         startArSession()
     }
 
@@ -239,7 +246,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         session?.close()
         session = null
         selfieMode = useSelfie
-        hairGroup.visibility = if (useSelfie) View.VISIBLE else View.GONE
+        hairGroup.visibility = if (useSelfie || imageMode) View.VISIBLE else View.GONE
         prefs.edit().putBoolean("selfie", useSelfie).apply()
         lastHint = ""
         viewportChanged = true
@@ -908,6 +915,73 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
+    /** "Select capture method:" – Front (selfie), Rear (ARCore) or Image (a picture from the library). */
+    private fun setupModeSpinner(spinner: android.widget.Spinner) {
+        val labels = listOf("Front (selfie)", "Rear (ARCore)", "Image")
+        val adapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, labels)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter = adapter
+        spinner.setSelection(if (imageMode) 2 else if (selfieMode) 0 else 1, false)
+        spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (state != State.AIM) return
+                val wantImage = position == 2
+                prefs.edit().putBoolean("image", wantImage).apply()
+                if (wantImage) {
+                    if (imageMode) return
+                    imageMode = true
+                    surfaceView.onPause(); session?.pause()
+                    hairGroup.visibility = View.VISIBLE
+                    lastHint = ""
+                    enterAim()
+                    return
+                }
+                val wantSelfie = position == 0
+                val wasImage = imageMode
+                imageMode = false
+                if (wantSelfie != selfieMode) switchCamera(wantSelfie)
+                else if (wasImage) { lastHint = ""; enterAim(); hairGroup.visibility = if (selfieMode) View.VISIBLE else View.GONE; startArSession() }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+    }
+
+    /** Image mode: finds the face in the chosen picture and builds the head from it. */
+    private fun processImage(uri: android.net.Uri) {
+        if (state != State.AIM) return
+        state = State.PROCESSING
+        enterProcessing()
+        showStatus("Finding the face in the picture…")
+        val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle)
+        lastSettings = settings
+        lifecycleScope.launch(Dispatchers.Default) {
+            try {
+                // Wait for the head model if it's still loading.
+                var waited = 0
+                while (HeadModel.default == null && waited < 50) { kotlinx.coroutines.delay(100); waited++ }
+                val face = PhotoImport.load(this@MainActivity, uri, workDir)
+                val frames = listOf(face.keyframe)
+                selfieInput = Triple(frames, face.vertices, face.triangles)
+                rearInput = null
+                val result = HeadScanPipeline(settings).runSelfie(frames, face.vertices, face.triangles, photoSource(), { msg, p ->
+                    runOnUiThread { showStatus("Building 3D model from the picture…\n$msg"); progressBar.progress = (p * 100).toInt() }
+                })
+                val check = AlignmentCheck.draw(face.keyframe, face.vertices)
+                withContext(Dispatchers.Main) {
+                    lastSettings = settings.copy(headShape = result.headShape)
+                    lastFit = result.headFit
+                    enterPreview(result, check, fresh = true)
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    selfieInput = null
+                    savedUris = emptyList()
+                    enterDone("Couldn't build a head from that picture: ${e.message ?: e.javaClass.simpleName}\n\nUse a clear, well-lit photo of one face looking at the camera.")
+                }
+            }
+        }
+    }
+
     private fun setupHairSpinner(spinner: android.widget.Spinner, initial: HairStyle, onPick: (HairStyle) -> Unit) {
         val adapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, HairStyle.values().map { hairLabel(it) })
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
@@ -1054,8 +1128,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         optionsPanel.visibility = View.VISIBLE
         progressBar.visibility = View.GONE
         secondaryButton.visibility = View.GONE
-        actionButton.text = "Start"
+        actionButton.text = if (imageMode) "Choose photo" else "Start"
         actionButton.isEnabled = true
+        if (imageMode) showStatus(IMAGE_HINT)
         coverageView.update(BooleanArray(0), crosshair = false)
         coverageView.setPosition(-1, 0); shownBin = -2
     }
@@ -1208,6 +1283,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         workDir.listFiles()?.forEach { it.delete() }
         lastHint = ""
         enterAim()
+        if (imageMode) { if (wasRunning) surfaceView.onPause(); session?.pause(); return }
         if (wasRunning) {
             surfaceView.onResume()
         } else {
@@ -1253,6 +1329,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     companion object {
         private const val REQUEST_CAMERA = 1
+        private const val IMAGE_HINT = "Image mode: tap Choose photo and pick a clear, well-lit picture of one face looking at the camera. " +
+            "The face comes from the picture; the rest of the head is predicted by the head-shape model."
         private const val COVERAGE_BINS = 24
         private const val HEAD_DEPTH = 0.10f       // nose tip to head centre, metres
         private const val MIN_DIST = 0.2f

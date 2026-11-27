@@ -26,6 +26,8 @@ class SelfieHead(
     faceOffset: FloatArray = FloatArray(3),
     /** The skull measured from the photos (see [HeadFit]); null = average proportions for the face size. */
     shape: HeadShape? = null,
+    /** Statistical head model fitted to the face for the head shape; null = the simple built-in head. */
+    model: HeadModel? = HeadModel.default,
 ) {
     private val verts = faceVertices
 
@@ -43,6 +45,12 @@ class SelfieHead(
     val neckBottom: Float
     val chinY get() = minY
 
+    /** The head model fitted to this face (null when the simple built-in head is used). */
+    val fitted: HeadModel.Fitted?
+    private val modelSdf: MeshSdf?
+    /** Ear centres from the fitted model (x is the right ear's distance from the midline). */
+    private val modelEar: FloatArray?
+
     private companion object {
         /** Distance outside the face over which the head is bent to meet the face edge. */
         const val FIT_FADE = 0.03f
@@ -55,6 +63,7 @@ class SelfieHead(
     private val gw: Int; private val gh: Int
     private val zFace: FloatArray
     private val blend: FloatArray
+    private val sampleBuf = object : ThreadLocal<FloatArray>() { override fun initialValue() = FloatArray(2) }
 
     init {
         var x0 = Float.MAX_VALUE; var x1 = -Float.MAX_VALUE
@@ -85,6 +94,8 @@ class SelfieHead(
             if (y > maxY - 0.022f && y < maxY - 0.008f && abs(x - midX) < 0.025f) { fSum += z; fN++ }
         }
         val zForehead = if (fN > 0) fSum / fN else noseZ - 0.03f * scale
+        blend = FloatArray(gw * gh)
+        computeBlend(borderCells = (0.02f / cell).toInt())
 
         val topOfHead = maxY + 0.045f * scale
         val jawLine = minY + 0.025f * scale
@@ -92,31 +103,86 @@ class SelfieHead(
         val ox = faceOffset[0]; val oy = faceOffset[1]; val oz = faceOffset[2]
         val rx0 = faceW / 2 * 1.05f
         val rz0 = 0.10f * scale
-        headCx = -ox
-        if (shape == null) {
-            headCy = (topOfHead + jawLine) / 2 - oy
-            ry = (topOfHead - jawLine) / 2
-            rx = rx0
-            rz = rz0
+        val fit = if (model == null) null else try { fitModel(model, shape, scale, ox, oy, oz) } catch (e: Exception) { null }
+        if (fit != null && model != null) {
+            // The head comes from the model fitted to the face: the skull measurements below are only used to
+            // place hair and to size the volume.
+            val v = fit.verts
+            var top = -Float.MAX_VALUE; var back = Float.MAX_VALUE; var xl = Float.MAX_VALUE; var xr = -Float.MAX_VALUE
+            val ear = FloatArray(4); var nl = 0; var nr = 0
+            for (i in 0 until model.n) {
+                val x = v[3 * i]; val y = v[3 * i + 1]; val z = v[3 * i + 2]
+                if (model.isEar(i)) {
+                    if (x > 0) { ear[0] += x; ear[1] += y; ear[2] += z; nr++ } else { ear[3] += -x; nl++ }
+                    continue
+                }
+                if (model.isFace(i) || model.isCap(i) || y < fit.neckCutY) continue
+                top = max(top, y)
+                if (y > jawLine) { back = min(back, z); xl = min(xl, x); xr = max(xr, x) }
+            }
+            headCx = (xl + xr) / 2
+            rx = (xr - xl) / 2
+            headCy = (top + jawLine) / 2
+            ry = (top - jawLine) / 2
+            rz = (zForehead - back) / 2
+            headCz = back + rz
+            modelEar = if (nr > 0 && nl > 0) floatArrayOf((ear[0] / nr + ear[3] / nl) / 2, ear[1] / nr, ear[2] / nr) else null
+            modelSdf = MeshSdf(fit.verts, model.tris, 0.0025f, 0.045f, minY = fit.neckCutY - 0.01f)
         } else {
-            // The bottom of the skull stays at the jaw; top, width, front and back come from the measurement.
-            val top = shape.top.coerceIn(maxY + 0.025f * scale, maxY + 0.075f * scale)
-            headCy = (top + jawLine - oy) / 2
-            ry = (top - (jawLine - oy)) / 2
-            // Keep the head in proportion to the face: thick hair in the outline can't make it too big.
-            rx = shape.rx.coerceIn(faceW / 2 * 0.98f, faceW / 2 + 0.02f * scale)
-            rz = (shape.zFront - shape.zBack) / 2
+            headCx = -ox
+            if (shape == null) {
+                headCy = (topOfHead + jawLine) / 2 - oy
+                ry = (topOfHead - jawLine) / 2
+                rx = rx0
+                rz = rz0
+            } else {
+                // The bottom of the skull stays at the jaw; top, width, front and back come from the measurement.
+                val top = shape.top.coerceIn(maxY + 0.025f * scale, maxY + 0.075f * scale)
+                headCy = (top + jawLine - oy) / 2
+                ry = (top - (jawLine - oy)) / 2
+                // Keep the head in proportion to the face: thick hair in the outline can't make it too big.
+                rx = shape.rx.coerceIn(faceW / 2 * 0.98f, faceW / 2 + 0.02f * scale)
+                rz = (shape.zFront - shape.zBack) / 2
+            }
+            // Front of the skull just behind the upper forehead (the measured depth front-to-back is kept).
+            val eyF = ((yF - headCy) / ry).coerceIn(-0.95f, 0.95f)
+            headCz = zForehead - 0.002f - rz * sqrt(1f - eyF * eyF) - oz
+            modelEar = null; modelSdf = null
         }
-        // Front of the skull just behind the upper forehead (the measured depth front-to-back is kept).
-        val eyF = ((yF - headCy) / ry).coerceIn(-0.95f, 0.95f)
-        headCz = zForehead - 0.002f - rz * sqrt(1f - eyF * eyF) - oz
+        fitted = fit
         widthScale = (rx / rx0).coerceIn(0.7f, 1.4f)
         neckR = 0.056f * scale * ((widthScale + (rz / rz0).coerceIn(0.7f, 1.4f)) / 2)
         neckCz = headCz - 0.012f * scale
         neckBottom = minY - 0.10f * scale - oy
+    }
 
-        blend = FloatArray(gw * gh)
-        computeBlend(borderCells = (0.02f / cell).toInt())
+    /** Fits [model] to the scanned face (and the skull measured from the photos, if any), in the face frame. */
+    private fun fitModel(model: HeadModel, shape: HeadShape?, scale: Float, ox: Float, oy: Float, oz: Float): HeadModel.Fitted? {
+        var nose = 0
+        for (i in 0 until verts.size / 3) if (verts[3 * i + 2] > verts[3 * nose + 2]) nose = i
+        val tip = floatArrayOf(verts[3 * nose], verts[3 * nose + 1], verts[3 * nose + 2])
+        val targets = shape?.let {
+            // Thick hair in the outline can't make the head too big for the face.
+            HeadModel.Targets(-ox, it.rx.coerceIn(faceW / 2 * 0.98f, faceW / 2 + 0.02f * scale),
+                it.top.coerceIn(maxY + 0.025f * scale, maxY + 0.075f * scale), it.zBack)
+        }
+        val f = model.fit(::faceDepth, tip, scale, targets)
+        if (f.used < 200 || f.rmsMm > 6f) return null
+        // The face offset moves the face on the head, i.e. the head the other way.
+        if (ox != 0f || oy != 0f || oz != 0f) for (i in 0 until model.n) { f.verts[3 * i] -= ox; f.verts[3 * i + 1] -= oy; f.verts[3 * i + 2] -= oz }
+        return HeadModel.Fitted(f.verts, f.coeffs, f.scale, f.rmsMm, f.used, f.neckCutY - oy)
+    }
+
+    /** Face depth at (x, y) for fitting: out = z, confidence, dz/dx, dz/dy; false where there is no face. */
+    fun faceDepth(x: Float, y: Float, out: FloatArray): Boolean {
+        val c = faceSample(x, y) ?: return false
+        val z = c[0]; val w = c[1]
+        val ax = faceSample(x + cell, y)?.get(0); val bx = faceSample(x - cell, y)?.get(0)
+        val ay = faceSample(x, y + cell)?.get(0); val by = faceSample(x, y - cell)?.get(0)
+        out[0] = z; out[1] = w
+        out[2] = if (ax != null && bx != null) (ax - bx) / (2 * cell) else 0f
+        out[3] = if (ay != null && by != null) (ay - by) / (2 * cell) else 0f
+        return true
     }
 
     /**
@@ -199,7 +265,6 @@ class SelfieHead(
         }
     }
 
-    private val sampleBuf = object : ThreadLocal<FloatArray>() { override fun initialValue() = FloatArray(2) }
 
     /**
      * Face height and blend weight at (x, y), bilinearly interpolated between grid cells so the face surface
@@ -236,6 +301,20 @@ class SelfieHead(
 
     /** Approximate signed distance of the generic head + neck (negative inside). */
     fun genericSdf(x: Float, y: Float, z: Float): Float {
+        modelSdf?.let { m ->
+            // Below where the model's neck starts to flare into the shoulders, the neck carries straight down.
+            // Eased in over 3 cm so there's no step where the straight part starts.
+            val cut = fitted!!.neckCutY; val v = ((y - cut) / 0.015f).coerceAtLeast(0f)
+            val yy = cut + 0.015f * (if (v >= 2f) v else 1f + v * v / 4f)
+            var d = m.sample(x, yy, z)
+            // The model's ears are thin; thickened a little so they survive the low-poly mesh without holes.
+            modelEar?.let { e ->
+                val dx = abs(x - headCx) - e[0]; val dy = y - e[1]; val dz = z - e[2]
+                val r = sqrt(dx * dx + dy * dy + dz * dz)
+                if (r < 0.04f) d -= 0.0018f * (1f - smoothstep(0.025f, 0.04f, r))
+            }
+            return max(d, neckBottom - 0.02f - y)
+        }
         val sc = earScale
         // Cranium: main ellipsoid plus a rounded back of the skull (occiput), a little narrower at the temples.
         val ex = (x - headCx) / rx; val ey = (y - headCy) / ry; val ez = (z - headCz) / rz
@@ -427,10 +506,10 @@ class SelfieHead(
 
     private val earScale = faceW / 0.14f
     /** Ear centre height: between eye level and the bottom of the nose. */
-    private val earY = minY + 0.47f * (maxY - minY)
-    private val earZ = headCz - 0.012f * earScale
+    private val earY = modelEar?.get(1) ?: (minY + 0.47f * (maxY - minY))
+    private val earZ = modelEar?.get(2) ?: (headCz - 0.012f * earScale)
     /** Skull surface X at the ear centre. */
-    private val earSkullX: Float = run {
+    private val earSkullX: Float = modelEar?.let { it[0] - 0.008f * earScale } ?: run {
         val ey = (earY - headCy) / ry; val ez = (earZ - headCz) / rz
         rx * sqrt((1f - ey * ey - ez * ez).coerceAtLeast(0.05f))
     }
@@ -483,7 +562,8 @@ class SelfieHead(
         val zs = z - shift
         var g = genericSdf(x, y, zs) - hairThickness(x, y, zs)
         // Curtains cover the ears, so they're left off (they would poke through the hair).
-        if (hairStyle != HairStyle.CURTAINS) g = smin(g, earSdf(x, y, z), 0.003f)
+        // (The fitted model has its own ears.)
+        if (hairStyle != HairStyle.CURTAINS && modelSdf == null) g = smin(g, earSdf(x, y, z), 0.003f)
         val extra = extraHairSdf(x, y, z)
         if (extra < 0.05f) g = smin(g, extra, 0.006f)
         return g
@@ -600,7 +680,8 @@ class SelfieHead(
     fun distanceOutsideFace(x: Float, y: Float) = sampleGrid(edgeFit, edgeFit.outside, x, y, 0.05f)
 
     private fun headAndFace(x: Float, y: Float, z: Float): Float {
-        val g = headWithHair(x, y, z, edgeShift(x, y))
+        // Only the front of the head bends; the back of the head and neck stay where they are.
+        val g = headWithHair(x, y, z, edgeShift(x, y) * smoothstep(headCz - 0.03f, headCz + 0.03f, z))
         val fs = faceSample(x, y) ?: return g
         // Under the chin the face mesh turns edge-on and would leave a shelf: fade it out there so the jaw and
         // neck take over smoothly.

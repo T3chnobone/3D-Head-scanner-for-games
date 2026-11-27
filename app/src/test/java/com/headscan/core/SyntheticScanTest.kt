@@ -7,6 +7,7 @@ import kotlin.test.assertTrue
 
 /** Renders a synthetic head+neck+shoulders scene from orbiting cameras and runs the full pipeline. */
 class SyntheticScanTest {
+    init { TestModel.install() }
     val c = floatArrayOf(0.3f, 1.4f, -0.2f) // head centre in world
 
     fun sdf(px: Float, py: Float, pz: Float): Float {
@@ -276,6 +277,54 @@ class SyntheticScanTest {
             sideLight = true
             selfie(1500, hair = HairStyle.NONE, offset = FloatArray(3), outName = "side_lit")
         } finally { skinMode = false; sideLight = false; images.clear() }
+    }
+
+    /** Image mode: one front photo, with the face mesh a face detector would find in it. */
+    @Test
+    fun imageMode() {
+        skinMode = true
+        try {
+            val cam = lookAt(c[0] + 0.01f, c[1] + 0.02f, c[2] + 0.45f, c[0], c[1], c[2])
+            val kf0 = render(cam, "photo")
+            val img = images["photo"]!!
+            val ci = kf0.colorIntrinsics
+            // Face points: a grid over the front of the face, with eye corners and nose tip at the face mesh indices.
+            val gx = 30; val gy = 36
+            val n = gx * gy
+            val wx = FloatArray(n); val wy = FloatArray(n); val wz = FloatArray(n)
+            for (j in 0 until gy) for (i in 0 until gx) {
+                val x = -0.065f + 0.13f * i / (gx - 1); val y = -0.105f + 0.17f * j / (gy - 1)
+                val t = march(c[0] + x, c[1] + y, c[2] + 0.3f, 0f, 0f, -1f)
+                val k = j * gx + i; wx[k] = x; wy[k] = y; wz[k] = if (t > 0) 0.3f - t else 0f
+            }
+            fun put(k: Int, x: Float, y: Float) { val t = march(c[0] + x, c[1] + y, c[2] + 0.3f, 0f, 0f, -1f); wx[k] = x; wy[k] = y; wz[k] = 0.3f - t }
+            put(33, -0.042f, 0.012f); put(133, -0.018f, 0.012f); put(362, 0.018f, 0.012f); put(263, 0.042f, 0.012f); put(1, 0f, -0.01f)
+            val px = FloatArray(n); val py = FloatArray(n); val pz = FloatArray(n)
+            val w2c = kf0.worldToCam
+            for (k in 0 until n) {
+                val X = wx[k] + c[0]; val Y = wy[k] + c[1]; val Z = wz[k] + c[2]
+                val xc = w2c[0] * X + w2c[4] * Y + w2c[8] * Z + w2c[12]
+                val yc = w2c[1] * X + w2c[5] * Y + w2c[9] * Z + w2c[13]
+                val zc = w2c[2] * X + w2c[6] * Y + w2c[10] * Z + w2c[14]
+                px[k] = ci.cx + ci.fx * xc / -zc; py[k] = ci.cy - ci.fy * yc / -zc; pz[k] = -zc * ci.fx / 0.45f
+            }
+            val tris = ArrayList<Int>()
+            fun inFace(k: Int) = (wx[k] / 0.068f).pow(2) + ((wy[k] + 0.02f) / 0.09f).pow(2) <= 1f
+            for (j in 0 until gy - 1) for (i in 0 until gx - 1) {
+                val a = j * gx + i; val b = a + 1; val d = a + gx; val e = d + 1
+                if (listOf(a, b, d, e).all { inFace(it) && it !in setOf(33, 133, 362, 263, 1) }) tris.addAll(listOf(a, e, b, a, d, e))
+            }
+            val pf = PhotoFace.build(px, py, pz, tris.toIntArray(), img.width, img.height, "photo")
+            val res = HeadScanPipeline(ScanSettings(targetTriangles = 1500, style = HeadStyle.GOLDENEYE_SOURCE, hairStyle = HairStyle.SIDE_PART))
+                .runSelfie(listOf(pf.keyframe), pf.vertices, pf.triangles, { images[it.colorRef]!! })
+            assertTrue(res.triangleCount in 1400..1500, "triangles ${res.triangleCount}")
+            val out = File("build/image_mode").apply { mkdirs() }
+            File(out, "head.obj").writeText(res.objText())
+            File(out, "head_texture.ppm").outputStream().buffered().use { o ->
+                o.write("P6\n${res.textureSize} ${res.textureSize}\n255\n".toByteArray())
+                for (p in res.texture) { o.write((p shr 16) and 255); o.write((p shr 8) and 255); o.write(p and 255) }
+            }
+        } finally { skinMode = false; images.clear() }
     }
 
     @Test
