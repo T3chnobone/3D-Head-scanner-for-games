@@ -147,6 +147,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var dbgMirrorFace = true
     private var dbgScatter = false
     private var dbgTint = false
+    /** Fix photo options (⋮ menu), off on each app start. */
+    private var fixFacialHair = false
+    /** Beard drop-down on the preview. */
+    private var editBeard = com.headscan.core.Beard.NONE
+    private lateinit var editBeardGroup: View
+    private lateinit var editBeardSpinner: android.widget.Spinner
     private lateinit var matchButton: android.widget.Button
     private var lastFit: com.headscan.core.HeadFit.Result? = null
     private var rearInput: Pair<List<Keyframe>, FloatArray>? = null      // kept so the preview can rebuild a rear scan
@@ -721,7 +727,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
             faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f, enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin,
             wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend, mirrorFace = dbgMirrorFace,
-            skinScatter = dbgScatter, skinTint = dbgTint)
+            skinScatter = dbgScatter, skinTint = dbgTint, beard = editBeard, continueFacialHair = fixFacialHair)
         lastSettings = settings
         showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
@@ -807,6 +813,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             mirrorFace = dbgMirrorFace,
             skinScatter = dbgScatter,
             skinTint = dbgTint,
+            beard = editBeard,
+            continueFacialHair = fixFacialHair,
         )
         state = State.PROCESSING
         actionButton.isEnabled = false
@@ -888,6 +896,23 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         editPanel = findViewById(R.id.edit_panel)
         applyButton = findViewById(R.id.edit_apply)
         editHairGroup = findViewById(R.id.edit_hair_group)
+        editBeardGroup = findViewById(R.id.edit_beard_group)
+        editBeardSpinner = findViewById(R.id.edit_beard_spinner)
+        val beards = com.headscan.core.Beard.values()
+        val beardAdapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, beards.map { beardLabel(it) })
+        beardAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        editBeardSpinner.adapter = beardAdapter
+        editBeardSpinner.setSelection(beards.indexOf(editBeard), false)
+        editBeardSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val b = beards[position]
+                if (b != editBeard) {
+                    editBeard = b
+                    if (!suppressEditEvents) markDirty()
+                }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
         editHairSpinner = findViewById(R.id.edit_hair_spinner)
         editPost = findViewById(R.id.edit_postprocess)
         val postAdapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, POST_PROCESSES)
@@ -1066,7 +1091,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
             enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin,
             wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend, mirrorFace = dbgMirrorFace,
-            skinScatter = dbgScatter, skinTint = dbgTint)
+            skinScatter = dbgScatter, skinTint = dbgTint, beard = editBeard, continueFacialHair = fixFacialHair)
         lastSettings = settings
         lifecycleScope.launch(Dispatchers.Default) {
             try {
@@ -1112,6 +1137,13 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
+    private fun beardLabel(b: com.headscan.core.Beard) = when (b) {
+        com.headscan.core.Beard.NONE -> "None"
+        com.headscan.core.Beard.STUBBLE -> "Stubble"
+        com.headscan.core.Beard.SHORT -> "Short beard"
+        com.headscan.core.Beard.FULL -> "Full beard"
+    }
+
     private fun hairLabel(h: HairStyle) = when (h) {
         HairStyle.NONE -> "No hair"
         HairStyle.SIDE_PART -> "Side parting"
@@ -1155,6 +1187,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             mirrorFace = dbgMirrorFace,
             skinScatter = dbgScatter,
             skinTint = dbgTint,
+            beard = editBeard,
+            continueFacialHair = fixFacialHair,
         )
         editDirty = false
         actionButton.isEnabled = false
@@ -1201,6 +1235,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         previewView.resetZoom()
         editHair = hair
         editHairSpinner.setSelection(HairStyle.values().indexOf(hair))
+        if (::editBeardSpinner.isInitialized) editBeardSpinner.setSelection(com.headscan.core.Beard.values().indexOf(editBeard), false)
         editPost.setSelection(postIndex(), false)
         updateMatchButton()
         suppressEditEvents = false
@@ -1299,6 +1334,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val selfieEdits = selfieInput != null
         applyMinimisedSliders()
         editHairGroup.visibility = if (selfieEdits) View.VISIBLE else View.GONE
+        editBeardGroup.visibility = if (selfieEdits) View.VISIBLE else View.GONE
         applyButton.visibility = View.GONE   // edits apply live
         editPanel.visibility = View.VISIBLE
         colorSliders.visibility = if (result.canRecolorHair) View.VISIBLE else View.GONE
@@ -1343,6 +1379,14 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             setPadding(0, px(10), 0, 0)
         })
 
+        box.addView(header("Fix photo"))
+        val cbFacialHair = android.widget.CheckBox(this).apply { text = "Continue facial hair onto the head"; isChecked = fixFacialHair }.also { box.addView(it) }
+        box.addView(TextView(this).apply {
+            text = "Carries the stubble or beard seen at the edge of your face on over the cheeks, jaw and under the chin."
+            textSize = 12f
+            alpha = 0.7f
+        })
+
         box.addView(header("Debug: head texture"))
         fun check(label: String, on: Boolean) = android.widget.CheckBox(this).apply { text = label; isChecked = on }.also { box.addView(it) }
         val cbWhole = check("1. Photos over the whole head", dbgWholeHead)
@@ -1368,10 +1412,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 if (::editPost.isInitialized) editPost.setSelection(postIndex(), false)
                 val changed = cbWhole.isChecked != dbgWholeHead || cbHair.isChecked != dbgPhotoHair ||
                     cbSkin.isChecked != dbgRealSkin || cbBlend.isChecked != dbgWideBlend || cbMirror.isChecked != dbgMirrorFace ||
-                    cbScatter.isChecked != dbgScatter || cbTint.isChecked != dbgTint
+                    cbScatter.isChecked != dbgScatter || cbTint.isChecked != dbgTint || cbFacialHair.isChecked != fixFacialHair
                 dbgWholeHead = cbWhole.isChecked; dbgPhotoHair = cbHair.isChecked
                 dbgRealSkin = cbSkin.isChecked; dbgWideBlend = cbBlend.isChecked; dbgMirrorFace = cbMirror.isChecked
                 dbgScatter = cbScatter.isChecked; dbgTint = cbTint.isChecked
+                fixFacialHair = cbFacialHair.isChecked
                 if (changed && state == State.PREVIEW) markDirty()
             }
             .setNegativeButton("Cancel", null)

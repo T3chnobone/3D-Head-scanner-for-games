@@ -305,6 +305,28 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/edit_beard_group"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="110dp"
+                    android:layout_height="wrap_content"
+                    android:text="Beard"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+
+                <Spinner
+                    android:id="@+id/edit_beard_spinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:backgroundTint="@android:color/white" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:gravity="end"

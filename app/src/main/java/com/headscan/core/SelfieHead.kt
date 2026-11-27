@@ -11,6 +11,9 @@ import kotlin.math.sqrt
 /** Hair added to the generic head in Selfie mode. */
 enum class HairStyle { NONE, SIDE_PART, BUZZ, MOHICAN, CURTAINS, SPIKY }
 
+/** Facial hair painted on the head (texture only). */
+enum class Beard { NONE, STUBBLE, SHORT, FULL }
+
 /**
  * Builds a full head + neck volume for Selfie mode: the person's real face surface (the ARCore
  * Augmented Faces mesh, averaged over the capture) is merged onto a generic head and neck that is
@@ -545,6 +548,34 @@ class SelfieHead(
     }
 
     /** Eyes, lips and ears: kept smooth-shaded in the low-poly game look. */
+    /**
+     * Where facial hair grows (0..1): the cheeks below a line from the sideburn to just under the nose, the upper lip,
+     * chin and jaw, and under the jaw fading out [neckReach] metres down the neck. Not on the lips or behind the ear.
+     */
+    fun beardZone(x: Float, y: Float, z: Float, neckReach: Float): Float {
+        val h = maxY - minY
+        val cx = (minX + maxX) / 2
+        val ax = abs(x - cx)
+        val s = earScale
+        val mouthY = minY + 0.21f * h
+        val mouthHalf = 0.22f * faceW
+        // 0 at the ear, 1 at the front of the face
+        val front = smoothstep(earZ, noseZ - 0.03f, z)
+        val behind = smoothstep(earZ - 0.002f * s, earZ + 0.01f * s, z)
+        if (behind <= 0f) return 0f
+        // Top edge: sideburn height at the ear, down to just under the nose at the front.
+        val upper = earY - 0.004f * s + (minY + 0.31f * h - (earY - 0.004f * s)) * Math.pow(front.toDouble(), 0.7).toFloat()
+        val top = 1f - smoothstep(upper - 0.006f, upper + 0.004f, y)
+        // Bottom edge: the jaw line (rises towards the ear), then fades down the neck.
+        val jaw = minY + (earY - 0.07f * s - minY) * (1f - front)
+        val bottom = smoothstep(jaw - neckReach - 0.012f, jaw - neckReach + 0.004f, y)
+        // Lips stay clear.
+        val lx = ax / (1.12f * mouthHalf); val ly = (y - mouthY - 0.003f * h) / (0.04f * h)
+        val lips = smoothstep(0.85f, 1.15f, sqrt(lx * lx + ly * ly))
+        val lipsW = if (z > noseZ - 0.05f) lips else 1f
+        return behind * top * bottom * lipsW
+    }
+
     fun isDetailArea(x: Float, y: Float, z: Float): Boolean {
         if (earSdf(x, y, z) < 0.004f) return true
         if (z < noseZ - 0.06f) return false

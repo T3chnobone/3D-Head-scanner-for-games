@@ -52,6 +52,10 @@ data class ScanSettings(
     val skinScatter: Boolean = false,
     /** Debug, selfie mode: natural colour variation on the painted skin (blotches, redder ears, paler scalp, neck). */
     val skinTint: Boolean = false,
+    /** Selfie mode: facial hair painted on, coloured from the photo. */
+    val beard: Beard = Beard.NONE,
+    /** Fix photo, selfie mode: carry the facial hair seen at the edge of the face on over the painted cheeks, jaw and neck. */
+    val continueFacialHair: Boolean = false,
 )
 
 /** Visual style of the generated head. */
@@ -383,6 +387,10 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             overrideColor = { x, y, z, seen, t -> hairFill.override(x, y, z, seen, t) },
         ) else baker.finish()
         if (hairFill != null) improveSkin(baker, texture, hairFill)
+        if (hairFill != null && (s.beard != Beard.NONE || s.continueFacialHair)) {
+            progress("Facial hair", 0.86f)
+            facialHair(baker, texture, hairFill)
+        }
         val net = if (hairFill == null) null else when (s.enhance) {
             Enhance.SHARPEN -> AiModels.sharpen
             Enhance.DENOISE -> AiModels.denoise
@@ -468,6 +476,74 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             val d = (sample(y, z) * wx + sample(x, z) * wy + sample(x, y) * wz) / (wx + wy + wz) * 0.85f * k
             fun ch(sh: Int) = (((c shr sh) and 255) + d).toInt().coerceIn(0, 255)
             (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+    }
+
+    /**
+     * Facial hair: [ScanSettings.continueFacialHair] measures how much beard or stubble the photo shows at the edge
+     * of the face and carries it on over the painted cheeks, jaw and under the chin; [ScanSettings.beard] paints a
+     * chosen beard over the whole beard area. Both use the facial hair colour from the photo.
+     */
+    private fun facialHair(baker: TextureBaker, texture: IntArray, hf: HairFill) {
+        val head = hf.head
+        val h = head.maxY - head.minY
+        fun luma(c: Int) = 0.299f * ((c shr 16) and 255) + 0.587f * ((c shr 8) and 255) + 0.114f * (c and 255)
+        // Plain skin brightness (upper cheeks, away from any beard) and the photo just inside the face edge in the beard area.
+        val skinL = ArrayList<Float>(); val edge = ArrayList<Int>()
+        baker.mapTexels(texture) { x, y, z, _, _, _, c ->
+            val fm = head.faceMask(x, y, z)
+            if (!head.isDetailArea(x, y, z) && hf.isSkin(x, y, z)) {
+                val zone = head.beardZone(x, y, z, 0.02f)
+                if (fm > 0.95f && zone < 0.02f && y > head.minY + 0.35f * h && y < head.minY + 0.6f * h) skinL.add(luma(c))
+                else if (fm in 0.6f..0.97f && zone > 0.6f) edge.add(c)
+            }
+            c
+        }
+        if (skinL.size < 50 || edge.size < 50) return
+        skinL.sort()
+        val sl = skinL[skinL.size / 2].coerceAtLeast(1f)
+        val byL = edge.sortedBy { luma(it) }
+        val el = luma(byL[byL.size / 2])
+        // Facial hair colour: the darker third of the edge texels.
+        var r = 0f; var g = 0f; var b = 0f
+        val n = (byL.size / 3).coerceAtLeast(1)
+        for (i in 0 until n) { val c = byL[i]; r += (c shr 16) and 255; g += (c shr 8) and 255; b += c and 255 }
+        var hairCol = (0xFF shl 24) or ((r / n).toInt() shl 16) or ((g / n).toInt() shl 8) or (b / n).toInt()
+        // How dark the edge is compared with plain skin: about 0 = clean shaven, 1 = full beard.
+        val density = ((sl - el) / (0.45f * sl)).coerceIn(0f, 1f)
+        if (luma(hairCol) > 0.85f * sl) hairCol = hf.hair      // couldn't see any facial hair: use the head hair colour
+        if (settings.continueFacialHair && density > 0.08f) {
+            val style = when { density < 0.35f -> Beard.STUBBLE; density < 0.7f -> Beard.SHORT; else -> Beard.FULL }
+            paintBeard(baker, texture, hf, style, hairCol, (density * 1.6f).coerceAtMost(1f), onlyPainted = true)
+        }
+        if (settings.beard != Beard.NONE) paintBeard(baker, texture, hf, settings.beard, hairCol, 1f, onlyPainted = false)
+    }
+
+    private fun paintBeard(baker: TextureBaker, texture: IntArray, hf: HairFill, style: Beard, colour: Int, strength: Float, onlyPainted: Boolean) {
+        val head = hf.head
+        val reach = when (style) { Beard.STUBBLE -> 0.015f; Beard.SHORT -> 0.025f; else -> 0.035f }
+        val base = when (style) { Beard.STUBBLE -> 0.1f; Beard.SHORT -> 0.5f; else -> 0.8f }
+        val dots = when (style) { Beard.STUBBLE -> 0.3f; Beard.SHORT -> 0.6f; else -> 0.4f }
+        fun hash3(i: Int, j: Int, k: Int): Float {
+            var hh = i * 374761393 + j * 668265263 + k * 2147483629
+            hh = (hh xor (hh ushr 13)) * 1274126177
+            return ((hh xor (hh ushr 16)) and 0xFFFFFF) / 16777215f
+        }
+        val cr = (colour shr 16) and 255; val cg = (colour shr 8) and 255; val cb = colour and 255
+        baker.mapTexelsT(texture) { t, x, y, z, _, _, _, c ->
+            var w = head.beardZone(x, y, z, reach) * strength
+            if (onlyPainted) w *= (1f - head.faceMask(x, y, z)) * (1f - hf.photoAt(t))
+            if (w <= 0.01f) return@mapTexelsT c
+            // Hairs: a coverage tone plus individual dots/strands (strands run downwards for longer beards).
+            val cell = if (style == Beard.STUBBLE) 0.0008f else 0.0011f
+            val stretch = if (style == Beard.STUBBLE) 1f else 2.5f
+            val d = hash3(kotlin.math.floor(x / cell).toInt(), kotlin.math.floor(y / (cell * stretch)).toInt(), kotlin.math.floor(z / cell).toInt())
+            var a = base + (if (d < dots) (1f - base) * (if (style == Beard.STUBBLE) 0.5f else 0.8f) else 0f)
+            if (style == Beard.FULL) a = a * (0.9f + 0.1f * kotlin.math.sin(x * 900f + kotlin.math.sin(y * 300f) * 2f))
+            val shade = if (style == Beard.FULL) 0.85f + 0.3f * d else 0.9f + 0.2f * d
+            val k = (a * w).coerceIn(0f, 1f)
+            fun ch(sh: Int, hc: Int) = (((c shr sh) and 255) * (1f - k) + (hc * shade).coerceAtMost(255f) * k).toInt().coerceIn(0, 255)
+            (0xFF shl 24) or (ch(16, cr) shl 16) or (ch(8, cg) shl 8) or ch(0, cb)
         }
     }
 
