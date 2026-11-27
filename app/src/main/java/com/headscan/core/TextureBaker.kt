@@ -307,7 +307,7 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
      * of their mirror-image point when that was seen at least twice as well. Fixes a weak side of the face.
      * Works on the finished [texture] in place.
      */
-    fun mirrorWeakSide(texture: IntArray, mirrorX: Float, where: (Float, Float, Float) -> Boolean) {
+    fun mirrorWeakSide(texture: IntArray, mirrorX: Float, where: (Float, Float, Float) -> Float) {
         val cell = 0.002f
         val grid = HashMap<Long, Int>()
         fun key(x: Float, y: Float, z: Float): Long {
@@ -321,9 +321,15 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
             if (prev == null || bestScore[t] > bestScore[prev]) grid[kk] = t
         }
         val src = texture.copyOf()
+        val n = size * size
+        // 1. For each texel: the mirror-side colour, and how much to use it (by how much better that side was seen).
+        val mirrorCol = IntArray(n); val kRaw = FloatArray(n); val has = FloatArray(n)
         for (t in texelIndex.indices) {
+            val i = texelIndex[t]
+            has[i] = 1f
             val x = texelPos[3 * t]; val y = texelPos[3 * t + 1]; val z = texelPos[3 * t + 2]
-            if (!where(x, y, z)) continue
+            val w = where(x, y, z)
+            if (w <= 0f) continue
             val mx = 2 * mirrorX - x
             var best = -1; var bs = 0f
             // search the mirror point's cell and its neighbours
@@ -331,13 +337,46 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
                 val m = grid[key(mx + dx * cell, y + dy * cell, z + dz * cell)] ?: continue
                 if (bestScore[m] > bs) { bs = bestScore[m]; best = m }
             }
-            if (best < 0 || bs < 2f * bestScore[t] || bs < 0.25f) continue
-            // blend in by how much better the mirror side is
-            val k = ((bs / max(bestScore[t], 1e-3f) - 2f) / 2f).coerceIn(0f, 1f)
-            val a = src[texelIndex[t]]; val b = src[texelIndex[best]]
-            fun ch(sh: Int) = (((a shr sh) and 255) * (1 - k) + ((b shr sh) and 255) * k).toInt().coerceIn(0, 255)
-            texture[texelIndex[t]] = (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+            if (best < 0 || bs < 0.25f) continue
+            mirrorCol[i] = src[texelIndex[best]]
+            // Ramps in from 1.5x to 4x better, so there's no hard edge where the mirror side starts to win.
+            kRaw[i] = w * ((bs / max(bestScore[t], 1e-3f) - 1.5f) / 2.5f).coerceIn(0f, 1f)
         }
+        if (kRaw.none { it > 0f }) return
+        // 2. Soften the amount over about a centimetre and a half of skin, so the copy fades in.
+        val r = max(4, size / 64)
+        val kb = blur(kRaw, r); val hb = blur(has, r)
+        val k = FloatArray(n) { if (has[it] > 0f && hb[it] > 1e-3f) (kb[it] / hb[it]) else 0f }
+        // 3. Match the copy's broad colour and brightness to the skin it replaces (it comes from another photo).
+        val rr = max(8, size / 32)
+        val useM = FloatArray(n) { if (kRaw[it] > 0f) 1f else 0f }
+        val bu = blur(useM, rr)
+        val gain = Array(3) { ch ->
+            val sh = 16 - 8 * ch
+            val own = blur(FloatArray(n) { ((src[it] shr sh) and 255) * useM[it] }, rr)
+            val mir = blur(FloatArray(n) { ((mirrorCol[it] shr sh) and 255) * useM[it] }, rr)
+            FloatArray(n) { if (bu[it] > 1e-3f && mir[it] > 1e-3f) (own[it] / mir[it]).coerceIn(0.7f, 1.4f) else 1f }
+        }
+        for (t in texelIndex.indices) {
+            val i = texelIndex[t]
+            val kk = k[i].coerceIn(0f, 1f)
+            if (kk <= 0.005f || kRaw[i] <= 0f && mirrorCol[i] == 0) continue
+            val a = src[i]; val b = mirrorCol[i]
+            if (b == 0) continue
+            fun ch(c: Int): Int { val sh = 16 - 8 * c; return (((a shr sh) and 255) * (1 - kk) + ((b shr sh) and 255) * gain[c][i] * kk).toInt().coerceIn(0, 255) }
+            texture[i] = (0xFF shl 24) or (ch(0) shl 16) or (ch(1) shl 8) or ch(2)
+        }
+    }
+
+    /**
+     * Re-pads the gaps around the texture islands from the finished surface colours. Without this, later passes
+     * (de-lighting, mirroring...) change the surface but not the padding, and the old colours show as thin lines
+     * along the island edges when the texture is filtered.
+     */
+    fun refreshPadding(texture: IntArray, passes: Int = 6) {
+        val filled = BooleanArray(size * size)
+        for (t in texelIndex.indices) filled[texelIndex[t]] = true
+        dilate(texture, filled, passes)
     }
 
     /**

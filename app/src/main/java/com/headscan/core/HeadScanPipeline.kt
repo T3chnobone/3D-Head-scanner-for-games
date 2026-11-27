@@ -46,6 +46,8 @@ data class ScanSettings(
     val realSkinFill: Boolean = false,
     /** Debug, selfie mode: wider face-to-head blend and the head skin always matched to the face. */
     val wideBlend: Boolean = false,
+    /** Selfie mode: copy the better-seen side of the face onto a side the photos only saw at an angle. */
+    val mirrorFace: Boolean = true,
 )
 
 /** Visual style of the generated head. */
@@ -394,6 +396,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             baker.bakeShading(texture, SourceStyle.vertexOcclusion(mesh, normals), SourceStyle::shade)
             SourceStyle.grade(texture, s.textureSize)
         }
+        baker.refreshPadding(texture)
         val flat = false
         // Low-poly game look (GoldenEye: Source style): big planes flat-shaded, eyes, lips and ears smooth.
         val smoothFaces = if (s.style == HeadStyle.GOLDENEYE_SOURCE) smoothMask(mesh, normals, hairFill?.head) else null
@@ -425,7 +428,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
         baker.removeLighting(texture, faceAmt, skinLuma) { x, y, z ->
             !head.isDetailArea(x, y, z) && head.hairColorAmount(x, y, z) < 0.05f && y < head.maxY - 0.02f && hf.isSkin(x, y, z)
         }
-        baker.mirrorWeakSide(texture, (head.minX + head.maxX) / 2) { x, y, z -> head.faceMask(x, y, z) > 0.5f }
+        if (settings.mirrorFace) baker.mirrorWeakSide(texture, (head.minX + head.maxX) / 2) { x, y, z -> smoothstep(0.35f, 0.75f, head.faceMask(x, y, z)) }
         // Carry the real skin colour at the edge of the face out onto the sides of the head (cheeks, temples,
         // towards the ears) so there's no colour change at the face edge.
         extendFaceColour(baker, texture, hf)
