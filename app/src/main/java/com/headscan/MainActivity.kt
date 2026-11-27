@@ -138,9 +138,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var shapeSize = 1f
     private var lastFit: com.headscan.core.HeadFit.Result? = null
     private var rearInput: Pair<List<Keyframe>, FloatArray>? = null      // kept so the preview can rebuild a rear scan
-    private lateinit var editGoldenEye: android.widget.Switch
+    private lateinit var editPost: android.widget.Spinner
     private var minimised = false
-    private var editHair = HairStyle.BUZZ
+    private var editHair = HairStyle.NONE
     private var editDirty = false
     private var suppressEditEvents = false
     private lateinit var applyButton: Button
@@ -174,9 +174,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         optionsPanel = findViewById(R.id.options_panel)
         previewView = findViewById(R.id.preview_view)
         applySystemBarInsets()
-        headStyle = if (prefs.getString("style", "") == HeadStyle.GOLDENEYE_SOURCE.name) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
+        // Every scan starts plain: no post process, no hair (both can be changed on the preview).
+        headStyle = HeadStyle.REALISTIC
         hairGroup = findViewById(R.id.hair_group)
-        hairStyle = HairStyle.values().firstOrNull { it.name == prefs.getString("hair", "") } ?: HairStyle.SIDE_PART
+        hairStyle = HairStyle.NONE
         val hairSpinner = findViewById<android.widget.Spinner>(R.id.hair_spinner)
         setupHairSpinner(hairSpinner, hairStyle) { h ->
             hairStyle = h
@@ -399,6 +400,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 tryStartCapture(frame, camera)
             } else {
                 hint("Point the camera at the person's head from about half a metre away and tap Start – no need to aim.\n\nThe person being scanned must keep perfectly still.")
+                showDistance(frame)
             }
             State.CAPTURING -> if (finishRequested.compareAndSet(true, false)) {
                 val before = keyframes.size
@@ -470,6 +472,37 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     // ---------------------------------------------------------------- capture logic (GL thread)
+
+    private var lastDistanceMs = 0L
+    private var shownDistanceLabel = ""
+
+    /** Rear camera, before Start: the Start button says if the person is too close or too far (middle of the view). */
+    private fun showDistance(frame: Frame) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastDistanceMs < 300) return
+        lastDistanceMs = now
+        val d = try {
+            frame.acquireDepthImage16Bits().use { img ->
+                val w = img.width; val h = img.height
+                val depth = ImageUtils.depthToShorts(img)
+                val vals = ArrayList<Int>()
+                for (y in h / 3 until 2 * h / 3) for (x in w / 3 until 2 * w / 3) {
+                    val v = depth[y * w + x].toInt() and 0xFFFF
+                    if (v in 100..5000) vals.add(v)
+                }
+                if (vals.size < 20) 0f else { vals.sort(); vals[vals.size / 4] / 1000f }   // nearer quarter: the head, not the wall
+            }
+        } catch (e: Exception) { 0f }
+        val label = when {
+            d <= 0f -> "Start"
+            d < MIN_GOOD_DIST -> "Start · too close"
+            d > MAX_GOOD_DIST -> "Start · too far"
+            else -> "Start · distance OK"
+        }
+        if (label == shownDistanceLabel) return
+        shownDistanceLabel = label
+        runOnUiThread { if (state == State.AIM && !imageMode && !selfieMode) actionButton.text = label }
+    }
 
     private fun tryStartCapture(frame: Frame, camera: Camera) {
         val depthImage = try { frame.acquireDepthImage16Bits() } catch (e: NotYetAvailableException) {
@@ -831,7 +864,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         applyButton = findViewById(R.id.edit_apply)
         editHairGroup = findViewById(R.id.edit_hair_group)
         editHairSpinner = findViewById(R.id.edit_hair_spinner)
-        editGoldenEye = findViewById(R.id.edit_goldeneye)
+        editPost = findViewById(R.id.edit_postprocess)
         editBars = listOf(findViewById(R.id.edit_size))
         val label = findViewById<TextView>(R.id.edit_size_label)
         editBars[0].setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -844,15 +877,21 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             override fun onStartTrackingTouch(sb: SeekBar) {}
             override fun onStopTrackingTouch(sb: SeekBar) {}
         })
-        editGoldenEye.setOnCheckedChangeListener { _, on ->
-            val style = if (on) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
-            if (style != headStyle) {
-                headStyle = style
-                prefs.edit().putString("style", headStyle.name).apply()
-                if (!suppressEditEvents) markDirty()
+        val postAdapter = android.widget.ArrayAdapter(this, R.layout.spinner_item, listOf("None", "GoldenEye: Source style"))
+        postAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        editPost.adapter = postAdapter
+        editPost.setSelection(0, false)
+        editPost.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val style = if (position == 1) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
+                if (style != headStyle) {
+                    headStyle = style
+                    if (!suppressEditEvents) markDirty()
+                }
             }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         }
-        setupHairSpinner(editHairSpinner, HairStyle.SIDE_PART) { h ->
+        setupHairSpinner(editHairSpinner, HairStyle.NONE) { h ->
             if (h != editHair) {
                 editHair = h
                 if (!suppressEditEvents) markDirty()
@@ -860,7 +899,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
         applyButton.setOnClickListener { applyEdits() }
         findViewById<View>(R.id.edit_reset).setOnClickListener { editBars[0].progress = 50 }
-        resetShape(HairStyle.SIDE_PART)
+        resetShape(HairStyle.NONE)
     }
 
     /** The two vertical sliders at the side of the preview: hair colour (rainbow) and tone (dark to light). */
@@ -1100,7 +1139,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         editBars.forEachIndexed { k, b -> b.progress = defaultProgress(k) + 1; b.progress = defaultProgress(k) }   // force change events so labels update
         editHair = hair
         editHairSpinner.setSelection(HairStyle.values().indexOf(hair))
-        editGoldenEye.isChecked = headStyle == HeadStyle.GOLDENEYE_SOURCE
+        editPost.setSelection(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) 1 else 0, false)
         suppressEditEvents = false
         editDirty = false
         applyButton.isEnabled = false
@@ -1153,6 +1192,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         progressBar.visibility = View.GONE
         secondaryButton.visibility = View.GONE
         actionButton.text = if (imageMode) "Choose photo" else "Start"
+        shownDistanceLabel = ""
         actionButton.isEnabled = true
         if (imageMode) showStatus(IMAGE_HINT)
         coverageView.update(BooleanArray(0), crosshair = false)
@@ -1246,7 +1286,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .setPositiveButton("Done") { _, _ ->
                 headStyle = if (styles.checkedRadioButtonId == goldeneye.id) HeadStyle.GOLDENEYE_SOURCE else HeadStyle.REALISTIC
                 prefs.edit().putString("style", headStyle.name).apply()
-                if (::editGoldenEye.isInitialized) editGoldenEye.isChecked = headStyle == HeadStyle.GOLDENEYE_SOURCE
+                if (::editPost.isInitialized) editPost.setSelection(if (headStyle == HeadStyle.GOLDENEYE_SOURCE) 1 else 0, false)
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1266,10 +1306,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun previewText(result: ScanResult?): String {
-        val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "Realistic"
+        val style = if (headStyle == HeadStyle.GOLDENEYE_SOURCE) "GoldenEye: Source style" else "No post process"
         return "Preview · ${result?.triangleCount ?: 0} triangles · ${result?.textureSize ?: 0}px texture · $style\nDrag to spin. " +
             (if (selfieInput != null) headSizeText(result) + "Change the hairstyle or style and the head updates by itself. " +
-                "The side sliders change hair colour and tone. " else "Switch GoldenEye style on or off and the head updates by itself. ") +
+                "The side sliders change hair colour and tone. " else "Pick a post process and the head updates by itself. ") +
             "Save it with a name, or discard it."
     }
 
@@ -1381,6 +1421,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val COVERAGE_BINS = 24
         private const val HEAD_DEPTH = 0.10f       // nose tip to head centre, metres
         private const val MIN_DIST = 0.2f
+        /** Best range for the rear scan (shown on the Start button). */
+        private const val MIN_GOOD_DIST = 0.3f
+        private const val MAX_GOOD_DIST = 0.9f
         private const val MAX_DIST = 1.3f
         private const val MAX_AIM_DEG = 45.0
         /** Ring sections needed before the hint says it's OK to finish (three-quarters). */

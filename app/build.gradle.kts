@@ -11,8 +11,8 @@ android {
         applicationId = "com.headscan"
         minSdk = 24
         targetSdk = 35
-        versionCode = 34
-        versionName = "0.34"
+        versionCode = 35
+        versionName = "0.35"
     }
 
     buildTypes {
