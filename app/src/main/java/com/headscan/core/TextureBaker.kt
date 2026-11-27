@@ -218,7 +218,7 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
      * Produces the final ARGB texture (row 0 = top). Unseen texels get [fillColor] at their position
      * (or the mean seen colour), gaps are dilated.
      */
-    fun finish(fillColor: ((Float, Float, Float) -> Int)? = null, overrideColor: ((Float, Float, Float, Int?) -> Int?)? = null): IntArray {
+    fun finish(fillColor: ((Float, Float, Float) -> Int)? = null, overrideColor: ((Float, Float, Float, Int?, Int) -> Int?)? = null): IntArray {
         val out = IntArray(size * size)
         val filled = BooleanArray(size * size)
         var sr = 0.0; var sg = 0.0; var sb = 0.0; var sn = 0
@@ -235,7 +235,7 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
                 ((accR[t] / accW[t]).toInt().coerceIn(0, 255) shl 16) or
                 ((accG[t] / accW[t]).toInt().coerceIn(0, 255) shl 8) or
                 (accB[t] / accW[t]).toInt().coerceIn(0, 255) else null
-            val forced = overrideColor?.invoke(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2], seen)
+            val forced = overrideColor?.invoke(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2], seen, t)
             if (forced != null) {
                 r = (forced shr 16) and 255; g = (forced shr 8) and 255; b = forced and 255
             } else if (accW[t] > 0f) {
@@ -524,6 +524,90 @@ class TextureBaker(private val mesh: Mesh, private val normals: FloatArray, priv
             out[j * patch + i] = (l[j * patch + i] - sum / 49f).coerceIn(-40f, 40f)
         }
         return out
+    }
+
+    /** Best view score of texel [t] (0 = never seen; about 1 = seen front-on, sharp, close). */
+    fun seenScore(t: Int) = bestScore[t]
+
+    /** Segmenter class of texel [t] from its best photo, or -1. */
+    fun texelLabel(t: Int) = bestLabel[t].toInt()
+
+    /** Position of texel [t] in the build frame. */
+    fun texelX(t: Int) = texelPos[3 * t]
+    fun texelY(t: Int) = texelPos[3 * t + 1]
+    fun texelZ(t: Int) = texelPos[3 * t + 2]
+
+    /**
+     * Per-texel values ([f] of texel index) softened in texture space by [blurRadius] texels; returns one value per
+     * texel, plus the same as a size x size map (for [removeLighting]).
+     */
+    fun texelField(blurRadius: Int, f: (Int) -> Float): Pair<FloatArray, FloatArray> {
+        val map = FloatArray(size * size); val has = FloatArray(size * size)
+        for (t in texelIndex.indices) { map[texelIndex[t]] = f(t); has[texelIndex[t]] = 1f }
+        val outMap = if (blurRadius > 0) {
+            val bm = blur(FloatArray(size * size) { map[it] * has[it] }, blurRadius); val bh = blur(has, blurRadius)
+            FloatArray(size * size) { if (has[it] > 0f && bh[it] > 1e-4f) bm[it] / bh[it] else 0f }
+        } else map
+        return FloatArray(texelIndex.size) { outMap[texelIndex[it]] } to outMap
+    }
+
+    /** Like [mapTexels], also giving the texel index t: [f](t, x, y, z, nx, ny, nz, argb) -> argb. */
+    fun mapTexelsT(texture: IntArray, f: (Int, Float, Float, Float, Float, Float, Float, Int) -> Int) {
+        for (t in texelIndex.indices) {
+            val i = texelIndex[t]
+            texture[i] = f(t, texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2], texelNrm[3 * t], texelNrm[3 * t + 1], texelNrm[3 * t + 2], texture[i])
+        }
+    }
+
+    /**
+     * A large square of real skin cut from the photo where [where] holds, as colour detail (RGB around 0, per channel,
+     * after taking out the local average), for covering parts no photo saw. Tries [sizes] largest first.
+     * Returns the patch (3 floats per texel), its side in texels and the metres it covers on the head.
+     */
+    fun skinColourPatch(texture: IntArray, where: (Float, Float, Float) -> Boolean, sizes: IntArray = intArrayOf(112, 80, 56, 40)): Triple<FloatArray, Int, Float>? {
+        val ok = BooleanArray(size * size)
+        val tAt = IntArray(size * size) { -1 }
+        for (t in texelIndex.indices) {
+            tAt[texelIndex[t]] = t
+            if (bestScore[t] > 0.3f && where(texelPos[3 * t], texelPos[3 * t + 1], texelPos[3 * t + 2])) ok[texelIndex[t]] = true
+        }
+        for (patch in sizes) {
+            if (patch >= size) continue
+            var bx = -1; var by = -1
+            loop@ for (y in 0 until size - patch step 4) for (x in 0 until size - patch step 4) {
+                if (!ok[(y + patch / 2) * size + x + patch / 2]) continue
+                var full = true
+                for (yy in y until y + patch step 2) { for (xx in x until x + patch step 2) if (!ok[yy * size + xx]) { full = false; break }; if (!full) break }
+                if (full) { bx = x; by = y; break@loop }
+            }
+            if (bx < 0) continue
+            // Metres covered: distance between the patch's corner texels on the surface.
+            val a = tAt[by * size + bx]; val b = tAt[by * size + bx + patch - 1]; val c = tAt[(by + patch - 1) * size + bx]
+            if (a < 0 || b < 0 || c < 0) continue
+            fun dist(p: Int, q: Int) = len3(texelPos[3 * p] - texelPos[3 * q], texelPos[3 * p + 1] - texelPos[3 * q + 1], texelPos[3 * p + 2] - texelPos[3 * q + 2])
+            val metres = (dist(a, b) + dist(a, c)) / 2 * patch / (patch - 1)
+            if (metres < 0.005f) continue
+            val n = patch * patch
+            val ch = Array(3) { k -> FloatArray(n) { val p = texture[(by + it / patch) * size + bx + it % patch]; ((p shr (16 - 8 * k)) and 255).toFloat() } }
+            val out = FloatArray(3 * n)
+            val r = 7
+            for (k in 0 until 3) {
+                val src = ch[k]
+                // Local mean with mirrored edges, so the patch also repeats seamlessly when mirrored.
+                fun at(i: Int, j: Int): Float {
+                    val ii = if (i < 0) -i - 1 else if (i >= patch) 2 * patch - i - 1 else i
+                    val jj = if (j < 0) -j - 1 else if (j >= patch) 2 * patch - j - 1 else j
+                    return src[jj * patch + ii]
+                }
+                for (j in 0 until patch) for (i in 0 until patch) {
+                    var sum = 0f
+                    for (dj in -r..r step 2) for (di in -r..r step 2) sum += at(i + di, j + dj)
+                    out[3 * (j * patch + i) + k] = (src[j * patch + i] - sum / 64f).coerceIn(-45f, 45f)
+                }
+            }
+            return Triple(out, patch, metres)
+        }
+        return null
     }
 
     /** Rewrites every surface texel of [texture]: [f](x, y, z, nx, ny, nz, argb) -> argb. */

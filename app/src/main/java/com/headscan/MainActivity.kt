@@ -139,6 +139,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var postAiSkin = false
     /** "Match head skin to face" button on the preview. */
     private var matchSkin = false
+    /** Debug texture options (⋮ menu), all off on each app start. */
+    private var dbgWholeHead = false
+    private var dbgPhotoHair = false
+    private var dbgRealSkin = false
+    private var dbgWideBlend = false
     private lateinit var matchButton: android.widget.Button
     private var lastFit: com.headscan.core.HeadFit.Result? = null
     private var rearInput: Pair<List<Keyframe>, FloatArray>? = null      // kept so the preview can rebuild a rear scan
@@ -711,7 +716,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val faceVerts = if (isSelfie) selfie.averagedVertices() else null
         val faceTris = if (isSelfie) selfie.triangles else null
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
-            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f, enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin)
+            faceOffsetZ = if (isSelfie) DEFAULT_FACE_Z else 0f, enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin,
+            wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend)
         lastSettings = settings
         showStatus("Building 3D model…")
         lifecycleScope.launch(Dispatchers.Default) {
@@ -790,6 +796,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             enhance = postEnhance,
             aiSkin = postAiSkin,
             matchHeadSkin = matchSkin,
+            wholeHeadPhoto = dbgWholeHead,
+            photoHair = dbgPhotoHair,
+            realSkinFill = dbgRealSkin,
+            wideBlend = dbgWideBlend,
         )
         state = State.PROCESSING
         actionButton.isEnabled = false
@@ -1039,7 +1049,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         enterProcessing()
         showStatus("Finding the face in the picture…")
         val settings = ScanSettings(targetTriangles = targetTriangles, style = headStyle, hairStyle = hairStyle,
-            enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin)
+            enhance = postEnhance, aiSkin = postAiSkin, matchHeadSkin = matchSkin,
+            wholeHeadPhoto = dbgWholeHead, photoHair = dbgPhotoHair, realSkinFill = dbgRealSkin, wideBlend = dbgWideBlend)
         lastSettings = settings
         lifecycleScope.launch(Dispatchers.Default) {
             try {
@@ -1121,6 +1132,10 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             enhance = postEnhance,
             aiSkin = postAiSkin,
             matchHeadSkin = matchSkin,
+            wholeHeadPhoto = dbgWholeHead,
+            photoHair = dbgPhotoHair,
+            realSkinFill = dbgRealSkin,
+            wideBlend = dbgWideBlend,
         )
         editDirty = false
         actionButton.isEnabled = false
@@ -1280,7 +1295,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         showStatus(previewText(result))
     }
 
-    /** Settings page (the ⋮ button): head style. Changes apply to the next scan. */
+    /** Settings page (the ⋮ button): head style, and the debug head texture options. */
     private fun showSettings() {
         val d = resources.displayMetrics.density
         fun px(v: Int) = (v * d).toInt()
@@ -1308,6 +1323,19 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             alpha = 0.7f
             setPadding(0, px(10), 0, 0)
         })
+
+        box.addView(header("Debug: head texture"))
+        fun check(label: String, on: Boolean) = android.widget.CheckBox(this).apply { text = label; isChecked = on }.also { box.addView(it) }
+        val cbWhole = check("1. Photos over the whole head", dbgWholeHead)
+        val cbHair = check("2. Real hair from the photo", dbgPhotoHair)
+        val cbSkin = check("3. Real skin where no photo reached", dbgRealSkin)
+        val cbBlend = check("4. Wider blend + match head skin", dbgWideBlend)
+        box.addView(TextView(this).apply {
+            text = "While a head is being previewed it rebuilds with these straight away. Off again when the app restarts."
+            textSize = 12f
+            alpha = 0.7f
+            setPadding(0, px(6), 0, 0)
+        })
         AlertDialog.Builder(this)
             .setTitle("Settings")
             .setView(android.widget.ScrollView(this).apply { addView(box) })
@@ -1316,6 +1344,11 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 prefs.edit().putString("style", headStyle.name).apply()
                 if (headStyle == HeadStyle.GOLDENEYE_SOURCE) { postEnhance = com.headscan.core.Enhance.NONE; postAiSkin = false }
                 if (::editPost.isInitialized) editPost.setSelection(postIndex(), false)
+                val changed = cbWhole.isChecked != dbgWholeHead || cbHair.isChecked != dbgPhotoHair ||
+                    cbSkin.isChecked != dbgRealSkin || cbBlend.isChecked != dbgWideBlend
+                dbgWholeHead = cbWhole.isChecked; dbgPhotoHair = cbHair.isChecked
+                dbgRealSkin = cbSkin.isChecked; dbgWideBlend = cbBlend.isChecked
+                if (changed && state == State.PREVIEW) markDirty()
             }
             .setNegativeButton("Cancel", null)
             .show()

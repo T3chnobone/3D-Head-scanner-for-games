@@ -309,6 +309,37 @@ class SyntheticScanTest {
         } finally { skinMode = false; images.clear(); AiModels.sharpen = null; AiModels.denoise = null; AiModels.segment = null }
     }
 
+    /** The four debug texture options (photo on the whole head, photo hair, real skin fill, wide blend), each and all together. */
+    @Test
+    fun wholeHeadTextureOptions() {
+        AiModels.segment = { inp ->
+            FloatArray(256 * 256 * 6) { o -> val p = o / 6; val c = o % 6
+                val dark = inp[3 * p] < 0.15f && inp[3 * p + 1] < 0.15f
+                val luma = 0.3f * inp[3 * p] + 0.59f * inp[3 * p + 1] + 0.11f * inp[3 * p + 2]
+                val cls = if (dark) SkinLabels.BACKGROUND else if (luma < 0.42f) SkinLabels.HAIR else SkinLabels.FACE_SKIN
+                if (c == cls) 1f else 0f }
+        }
+        skinMode = true
+        try {
+            val base = selfie(1500, hair = HairStyle.NONE, outName = "opt_off")
+            val variants = listOf<Pair<String, (ScanSettings) -> ScanSettings>>(
+                "opt_whole" to { it.copy(wholeHeadPhoto = true) },
+                "opt_hair" to { it.copy(photoHair = true) },
+                "opt_skin" to { it.copy(realSkinFill = true) },
+                "opt_blend" to { it.copy(wideBlend = true) },
+                "opt_all" to { it.copy(wholeHeadPhoto = true, photoHair = true, realSkinFill = true, wideBlend = true) },
+            )
+            for ((name, tweak) in variants) {
+                images.clear()
+                val r = selfie(1500, hair = HairStyle.NONE, outName = name, tweak = tweak)
+                var changed = 0
+                for (i in r.texture.indices) if (r.texture[i] != base.texture[i]) changed++
+                println("$name: $changed texels differ")
+                assertTrue(changed > 1000, "$name changes the texture")
+            }
+        } finally { skinMode = false; images.clear(); AiModels.segment = null }
+    }
+
     /** Face points a face mesh detector would find in [kf]'s photo: pixel x, y and relative depth, plus triangles. */
     fun fakeLandmarks(kf: Keyframe): Pair<RearFace.Landmarks, IntArray> {
         val ci = kf.colorIntrinsics
