@@ -980,7 +980,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 // Wait for the head model if it's still loading.
                 var waited = 0
                 while (HeadModel.default == null && waited < 50) { kotlinx.coroutines.delay(100); waited++ }
-                val face = PhotoImport.load(this@MainActivity, uri, workDir)
+                val face = PhotoImport.load(this@MainActivity, uri, workDir) { Breadcrumb.set(this@MainActivity, it) }
+                Breadcrumb.set(this@MainActivity, "building the head from the picture")
                 val frames = listOf(face.keyframe)
                 selfieInput = Triple(frames, face.vertices, face.triangles)
                 rearInput = null
@@ -988,12 +989,14 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     runOnUiThread { showStatus("Building 3D model from the picture…\n$msg"); progressBar.progress = (p * 100).toInt() }
                 })
                 val check = AlignmentCheck.draw(face.keyframe, face.vertices)
+                Breadcrumb.clear(this@MainActivity)
                 withContext(Dispatchers.Main) {
                     lastSettings = settings.copy(headShape = result.headShape)
                     lastFit = result.headFit
                     enterPreview(result, check, fresh = true)
                 }
             } catch (e: Throwable) {
+                Breadcrumb.clear(this@MainActivity)
                 withContext(Dispatchers.Main) {
                     selfieInput = null
                     savedUris = emptyList()
@@ -1354,8 +1357,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             try { file.writeText("v${BuildConfig.VERSION_NAME}\n" + android.util.Log.getStackTraceString(e).take(3000)) } catch (_: Throwable) {}
             previous?.uncaughtException(t, e)
         }
-        if (file.exists()) {
-            val text = try { file.readText() } catch (_: Throwable) { "" }
+        val step = Breadcrumb.takeReport(this)
+        if (file.exists() || step != null) {
+            val text = (if (file.exists()) try { file.readText() } catch (_: Throwable) { "" } else "") + (step?.let { "\n$it" } ?: "")
             file.delete()
             if (text.isNotBlank()) window.decorView.post {
                 android.app.AlertDialog.Builder(this).setTitle("The app crashed last time")

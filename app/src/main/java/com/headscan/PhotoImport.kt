@@ -22,10 +22,15 @@ import kotlin.math.max
 object PhotoImport {
     private const val MAX_SIDE = 1600
 
-    fun load(context: Context, uri: Uri, workDir: File): PhotoFace.Result {
-        val bmp = decodeUpright(context, uri) ?: throw ScanException("Couldn't open that picture.")
+    fun load(context: Context, uri: Uri, workDir: File, step: (String) -> Unit = {}): PhotoFace.Result {
+        step("opening the picture")
+        val decoded = decodeUpright(context, uri) ?: throw ScanException("Couldn't open that picture.")
+        // Plain 8-bit colour: HDR / wide-colour photos can decode to formats the face detector can't take.
+        val bmp = if (decoded.config == Bitmap.Config.ARGB_8888) decoded else decoded.copy(Bitmap.Config.ARGB_8888, false).also { decoded.recycle() }
+            ?: throw ScanException("Couldn't read that picture's colours.")
         val file = File(workDir, "photo_import.jpg")
         file.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+        step("finding the face in the picture")
         val detector = FaceMeshDetection.getClient(
             FaceMeshDetectorOptions.Builder().setUseCase(FaceMeshDetectorOptions.FACE_MESH).build())
         try {
@@ -58,6 +63,7 @@ object PhotoImport {
             val src = ImageDecoder.createSource(context.contentResolver, uri)
             return ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                decoder.setTargetColorSpace(android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB))
                 val s = info.size
                 val big = max(s.width, s.height)
                 if (big > MAX_SIDE) decoder.setTargetSize(s.width * MAX_SIDE / big, s.height * MAX_SIDE / big)
