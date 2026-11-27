@@ -11,8 +11,8 @@ android {
         applicationId = "com.headscan"
         minSdk = 24
         targetSdk = 35
-        versionCode = 36
-        versionName = "0.36"
+        versionCode = 37
+        versionName = "0.37"
     }
 
     buildTypes {
@@ -48,7 +48,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.1")
     // On-device person cut-out (Selfie mode head measuring); the model is bundled, no network needed.
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
-    implementation("com.google.mlkit:face-mesh-detection:16.0.0-beta1")
+    implementation("com.google.mlkit:face-mesh-detection:16.0.0-beta3")   // must use the same mediapipe-internal as segmentation-selfie
     // AI post process (Real-ESRGAN sharpen / denoise, MediaPipe skin segmenter); models are in assets.
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
 
