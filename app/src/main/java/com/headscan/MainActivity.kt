@@ -176,6 +176,15 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private lateinit var previewView: PreviewView
     private var pendingResult: ScanResult? = null
     private var pendingCheck: android.graphics.Bitmap? = null
+    /** Rear scans: why the face couldn't be used (shown on the preview), or null. */
+    @Volatile private var rearProblem: String? = null
+    /** Last save format picked (remembered between runs). */
+    private val saveFormatDefault get() = ScanExporter.Format.values()
+        .getOrElse(getPreferences(MODE_PRIVATE).getInt("save_format", 0)) { ScanExporter.Format.OBJ }
+    private var saveFormatSet: ScanExporter.Format? = null
+    private var saveFormat: ScanExporter.Format
+        get() = saveFormatSet ?: saveFormatDefault
+        set(v) { saveFormatSet = v }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -538,7 +547,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         // No aiming needed: the head is the nearest solid thing in the middle of the view.
         val found = depthImage.use { img ->
             val dw = img.width; val dh = img.height
-            ImageUtils.nearestHead(ImageUtils.depthToShorts(img), dw, dh)?.let { Pair(it, ImageUtils.toIntrinsics(camera.textureIntrinsics).scaledTo(dw, dh)) }
+            ImageUtils.nearestHead(ImageUtils.depthToShorts(img), dw, dh)?.let { Pair(it, ImageUtils.depthIntrinsics(camera, dw, dh)) }
         }
         if (found == null) {
             if (SystemClock.uptimeMillis() - startRequestedMs < START_RETRY_MS) {
@@ -630,7 +639,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val nv21 = raw.nv21; val cw = raw.cw; val ch = raw.ch
         val camToWorld = FloatArray(16).also { camera.pose.toMatrix(it, 0) }
         val worldToCam = FloatArray(16).also { camera.pose.inverse().toMatrix(it, 0) }
-        val depthIntr = ImageUtils.toIntrinsics(camera.textureIntrinsics).scaledTo(dw, dh)
+        val depthIntr = ImageUtils.depthIntrinsics(camera, dw, dh)
         val colorIntr = ImageUtils.toIntrinsics(camera.imageIntrinsics)
 
         val file = File(workDir, "kf_%03d.jpg".format(keyframes.size))
@@ -755,12 +764,17 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 var pipeline = HeadScanPipeline(settings)
                 // Rear camera: find the face in the scan photos, so the head model can be fitted and everything below
                 // the neck (clothes) left out. Falls back to the plain depth scan if no face is found.
+                rearProblem = null
                 val rear = if (isSelfie) null else {
                     runOnUiThread { showStatus("Finding the face in the photos…") }
                     try {
                         val found = RearFaces.find(frames)
-                        if (found.landmarks.isEmpty()) null else RearFace.build(frames, found.landmarks, found.triangles)
-                    } catch (e: Throwable) { null }
+                        val built = if (found.landmarks.isEmpty()) null else RearFace.build(frames, found.landmarks, found.triangles)
+                        if (built == null) rearProblem = if (found.landmarks.isEmpty())
+                            "no face was found in any of the ${found.photos} photos (keep the whole face in view, in good light)."
+                        else "a face was found in ${found.landmarks.size} of ${found.photos} photos, but " + (RearFace.lastProblem ?: "it couldn't be used") + "."
+                        built
+                    } catch (e: Throwable) { rearProblem = "Finding the face failed: ${e.message ?: e.javaClass.simpleName}."; null }
                 }
                 if (!isSelfie && rear == null) detailNote += " (no face found in the photos: plain depth scan)"
                 val result = if (isSelfie) {
@@ -856,12 +870,24 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             isSingleLine = true
         }
         val pad = (20 * resources.displayMetrics.density).toInt()
-        val box = android.widget.FrameLayout(this).apply { setPadding(pad, pad / 2, pad, 0); addView(input) }
+        val formats = ScanExporter.Format.values()
+        val formatLabel = android.widget.TextView(this).apply { text = "Save as:"; setPadding(0, pad / 2, 0, 0) }
+        val formatSpinner = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, formats.map { it.label })
+            setSelection(saveFormat.ordinal)
+        }
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input); addView(formatLabel); addView(formatSpinner)
+        }
         AlertDialog.Builder(this)
             .setTitle("Save head scan")
             .setMessage("Name for this model:")
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
+                saveFormat = formats[formatSpinner.selectedItemPosition.coerceIn(0, formats.size - 1)]
+                getPreferences(MODE_PRIVATE).edit().putInt("save_format", saveFormat.ordinal).apply()
                 save(result.withHairColor(hairHue, hairTone), input.text.toString())
             }
             .setNegativeButton("Cancel", null)
@@ -876,13 +902,19 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val check = pendingCheck
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val saved = ScanExporter.save(this@MainActivity, result, name, check)
+                val format = saveFormat
+                val saved = ScanExporter.save(this@MainActivity, result, name, check, format)
                 withContext(Dispatchers.Main) {
                     pendingCheck = null
                     savedUris = saved.uris
                     secondaryButton.isEnabled = true
-                    enterDone("Saved to ${saved.location}\n\n${result.triangleCount} triangles, ${result.textureSize}×${result.textureSize} texture. " +
-                        "Keep the .obj, .mtl and .png together when copying them.")
+                    val tip = when (format) {
+                        ScanExporter.Format.OBJ -> "Keep the .obj, .mtl and .png together when copying them."
+                        ScanExporter.Format.GLB -> "The .glb holds the model and texture in one file."
+                        ScanExporter.Format.SOURCE -> "Half-Life 2: copy the materials folder into your game folder, then compile the .qc with studiomdl (see README_Source.txt)."
+                        ScanExporter.Format.ALL -> "OBJ, glTF (.glb) and the Half-Life 2 pack (see README_Source.txt) are all in the folder."
+                    }
+                    enterDone("Saved to ${saved.location}\n\n${result.triangleCount} triangles, ${result.textureSize}×${result.textureSize} texture. " + tip)
                 }
             } catch (e: Throwable) {
                 withContext(Dispatchers.Main) {
@@ -1445,7 +1477,9 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private fun previewText(result: ScanResult?): String {
         val style = if (postIndex() == 0) "No post process" else POST_PROCESSES[postIndex()]
-        return "Preview · ${result?.triangleCount ?: 0} triangles · ${result?.textureSize ?: 0}px texture · $style\nDrag to spin, pinch to zoom. " +
+        val rearNote = if (rearInput != null) rearProblem?.let { "Plain depth scan, not a head: $it Scan again.\n" } ?: "" else ""
+        return "Preview · ${result?.triangleCount ?: 0} triangles · ${result?.textureSize ?: 0}px texture · $style\n" + rearNote +
+            "Drag to spin, pinch to zoom. " +
             (if (selfieInput != null) headSizeText(result) + "Change the hairstyle or style and the head updates by itself. " +
                 "The side sliders change hair colour and tone. " else "Pick a post process and the head updates by itself. ") +
             "Save it with a name, or discard it."

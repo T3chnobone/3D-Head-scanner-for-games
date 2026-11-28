@@ -19,7 +19,7 @@ import kotlin.math.max
 object RearFaces {
     private const val MAX_SIDE = 720
 
-    class Found(val landmarks: List<RearFace.Landmarks>, val triangles: IntArray)
+    class Found(val landmarks: List<RearFace.Landmarks>, val triangles: IntArray, val photos: Int)
 
     fun find(frames: List<Keyframe>): Found {
         val detector = FaceMeshDetection.getClient(
@@ -35,7 +35,7 @@ object RearFaces {
         } finally {
             detector.close()
         }
-        return Found(out, tris)
+        return Found(out, tris, frames.size)
     }
 
     private fun one(detector: com.google.mlkit.vision.facemesh.FaceMeshDetector, kf: Keyframe): Pair<RearFace.Landmarks, IntArray>? {
@@ -48,11 +48,26 @@ object RearFaces {
         val w = img.width; val h = img.height
         // Turn the photo so the world's up points up (the detector wants upright faces).
         val m = kf.worldToCam
-        val ux = m[4]; val uy = -m[5]
-        val rot = when {
+        val ux = m[4] * kotlin.math.sign(kf.colorIntrinsics.fx); val uy = -m[5] * kotlin.math.sign(kf.colorIntrinsics.fy)
+        val first = when {
             abs(ux) > abs(uy) -> if (ux > 0) 270 else 90
             else -> if (uy < 0) 0 else 180
         }
+        try {
+            // The expected way up first; if no face is found, the other three (the phone may have been held sideways
+            // or the pose may disagree with the photo's orientation).
+            for (rot in listOf(first, (first + 90) % 360, (first + 270) % 360, (first + 180) % 360)) {
+                val r = detectAt(detector, kf, img, rot) ?: continue
+                return r
+            }
+            return null
+        } finally {
+            img.recycle()
+        }
+    }
+
+    private fun detectAt(detector: com.google.mlkit.vision.facemesh.FaceMeshDetector, kf: Keyframe, img: Bitmap, rot: Int): Pair<RearFace.Landmarks, IntArray>? {
+        val w = img.width; val h = img.height
         val upright = if (rot == 0) img else Bitmap.createBitmap(img, 0, 0, w, h, Matrix().apply { postRotate(rot.toFloat()) }, true)
         try {
             val meshes = Tasks.await(detector.process(InputImage.fromBitmap(upright, 0)))
@@ -82,7 +97,6 @@ object RearFaces {
             return RearFace.Landmarks(kf, px, py, pz) to tris.toIntArray()
         } finally {
             if (upright !== img) upright.recycle()
-            img.recycle()
         }
     }
 }

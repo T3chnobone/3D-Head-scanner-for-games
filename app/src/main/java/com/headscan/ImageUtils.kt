@@ -106,6 +106,18 @@ object ImageUtils {
         return Triple(((best % cells) + 0.5f) * cw, ((best / cells) + 0.5f) * ch, bestD)
     }
 
+    /**
+     * Intrinsics for the depth image. The depth image matches either the CPU image or the GPU texture in aspect
+     * ratio depending on the phone; scaling the wrong one unevenly stretched every depth map (the rear scan came out
+     * as a jagged mess). Uses whichever matches, cropped and scaled evenly.
+     */
+    fun depthIntrinsics(camera: com.google.ar.core.Camera, dw: Int, dh: Int): Intrinsics {
+        val tex = toIntrinsics(camera.textureIntrinsics)
+        val img = toIntrinsics(camera.imageIntrinsics)
+        val best = if (img.aspectError(dw, dh) < tex.aspectError(dw, dh)) img else tex
+        return best.fittedTo(dw, dh)
+    }
+
     fun toIntrinsics(ci: CameraIntrinsics): Intrinsics {
         val f = ci.focalLength
         val p = ci.principalPoint

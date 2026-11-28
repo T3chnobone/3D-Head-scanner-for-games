@@ -20,6 +20,16 @@ object RearFace {
     private const val R_OUT = 33; private const val R_IN = 133; private const val L_IN = 362; private const val L_OUT = 263
     private const val NOSE = 1
 
+    /** Why the last [build] returned null, in words for the user. */
+    @Volatile var lastProblem: String? = null
+
+    private fun eyeDistance(w: FloatArray): Float {
+        fun c(i: Int, a: Int) = w[3 * i + a]
+        var d2 = 0f
+        for (a in 0..2) { val e = (c(L_IN, a) + c(L_OUT, a)) / 2 - (c(R_OUT, a) + c(R_IN, a)) / 2; d2 += e * e }
+        return sqrt(d2)
+    }
+
     /** How far the face is turned from the camera (0 = straight on), from the nose tip's offset between the eyes. */
     fun turn(l: Landmarks): Float {
         // Along the eye line (works whichever way up the photo is).
@@ -44,7 +54,8 @@ object RearFace {
         val meas = FloatArray(n)
         var valid = 0
         for (i in 0 until n) {
-            val u = (l.px[i] / ci.width * di.width).toInt(); val v = (l.py[i] / ci.height * di.height).toInt()
+            // Same camera, so map through the viewing ray (the two images can differ in field of view and aspect).
+            val u = (di.cx + di.fx * (l.px[i] - ci.cx) / ci.fx).toInt(); val v = (di.cy + di.fy * (l.py[i] - ci.cy) / ci.fy).toInt()
             meas[i] = kf.depthAt(u, v); if (meas[i] > 0.1f) valid++
         }
         if (valid < n / 3) return null
@@ -72,9 +83,20 @@ object RearFace {
      * front view was found (the caller falls back to the plain depth scan).
      */
     fun build(keyframes: List<Keyframe>, found: List<Landmarks>, triangles: IntArray): Result? {
-        // The three most front-on views with depth.
-        val lifted = found.filter { turn(it) < 0.25f }.sortedBy { turn(it) }.mapNotNull { lift(it) }.take(3)
-        if (lifted.isEmpty()) return null
+        // The three most front-on views with depth (front-on views preferred; a turned view is better than none).
+        lastProblem = null
+        val ordered = found.sortedBy { turn(it) }
+        val front = ordered.filter { turn(it) < 0.25f }
+        val lifted = (front.ifEmpty { ordered.filter { turn(it) < 0.45f } }).mapNotNull { lift(it) }
+            .filter { eyeDistance(it) in 0.04f..0.09f }.take(3)
+        if (lifted.isEmpty()) {
+            lastProblem = when {
+                found.isEmpty() -> "no face was found in any photo"
+                ordered.none { turn(it) < 0.45f } -> "the face was only seen from the side (stand in front of the face before tapping Finish)"
+                else -> "the face was found but the depth camera didn't measure it (move a little closer, 30-80 cm)"
+            }
+            return null
+        }
         val n = lifted[0].size / 3
         val w = FloatArray(n * 3)
         for (p in lifted) for (i in w.indices) w[i] += p[i] / lifted.size
@@ -82,7 +104,7 @@ object RearFace {
         fun mid(a: Int, b: Int): FloatArray { val p = pt(a); val q = pt(b); return floatArrayOf((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2) }
         val er = mid(R_OUT, R_IN); val el = mid(L_IN, L_OUT); val nose = pt(NOSE)
         val eyeDist = dist(er, el)
-        if (eyeDist !in 0.04f..0.09f) return null           // depth or detection went wrong
+        if (eyeDist !in 0.04f..0.09f) { lastProblem = "the face size came out wrong from the depth"; return null }
         // Face frame: X across the eyes, Y up (gravity), Z out of the face.
         var x = norm(floatArrayOf(el[0] - er[0], el[1] - er[1], el[2] - er[2]))
         val up = floatArrayOf(0f, 1f, 0f)

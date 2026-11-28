@@ -19,6 +19,21 @@ class Intrinsics(
     val height: Int,
 ) {
     /** Returns intrinsics rescaled to an image of a different resolution covering the same field of view. */
+    /**
+     * For an image of another aspect ratio that shows the centre of this one (e.g. a 4:3 depth image and a 16:9
+     * texture): crops to that aspect about the centre, then scales evenly, so pixels stay square.
+     */
+    fun fittedTo(newWidth: Int, newHeight: Int): Intrinsics {
+        val a = newWidth.toFloat() / newHeight
+        var w = width.toFloat(); var h = height.toFloat(); var px = cx; var py = cy
+        if (w / h > a) { val nw = h * a; px -= (w - nw) / 2; w = nw } else { val nh = w / a; py -= (h - nh) / 2; h = nh }
+        val s = newWidth / w
+        return Intrinsics(fx * s, fy * s, px * s, py * s, newWidth, newHeight)
+    }
+
+    /** How far this image's aspect ratio is from [w]:[h] (0 = the same). */
+    fun aspectError(w: Int, h: Int) = kotlin.math.abs(width.toFloat() / height / (w.toFloat() / h) - 1f)
+
     fun scaledTo(newWidth: Int, newHeight: Int): Intrinsics {
         val sx = newWidth.toFloat() / width
         val sy = newHeight.toFloat() / height
