@@ -657,6 +657,30 @@ class SelfieHead(
      * How much a point is on the ear (0..1). With the fitted head model this comes from the model's own ear (nearest
      * model point is an ear point), so it follows the real ear shape and stops where the ear meets the head.
      */
+    /**
+     * Head skin right around the ear (within about a centimetre of it, not on it): where the ear's colour is matched
+     * from. False without the head model's ear points.
+     */
+    fun aroundEar(x: Float, y: Float, z: Float): Boolean {
+        val e = earPoints ?: return false
+        val c = EAR_CELL
+        val ci = ((x - e.x0) / c).toInt(); val cj = ((y - e.y0) / c).toInt(); val ck = ((z - e.z0) / c).toInt()
+        var de = Float.MAX_VALUE; var dn = Float.MAX_VALUE
+        for (dk in -2..2) for (dj in -2..2) for (di in -2..2) {
+            val i = ci + di; val j = cj + dj; val k = ck + dk
+            if (i < 0 || j < 0 || k < 0 || i >= e.nx || j >= e.ny || k >= e.nz) continue
+            val list = e.cells[(k * e.ny + j) * e.nx + i] ?: continue
+            for (p in list) {
+                val dx = e.pts[3 * p] - x; val dy = e.pts[3 * p + 1] - y; val dz = e.pts[3 * p + 2] - z
+                val d = dx * dx + dy * dy + dz * dz
+                if (e.ear[p]) { if (d < de) de = d } else if (d < dn) dn = d
+            }
+        }
+        if (de == Float.MAX_VALUE || dn == Float.MAX_VALUE) return false
+        val dE = sqrt(de)
+        return sqrt(dn) + 0.002f < dE && dE < 0.012f
+    }
+
     fun onEar(x: Float, y: Float, z: Float): Float {
         val e = earPoints ?: return 1f - smoothstep(0.002f, 0.006f, earSdf(x, y, z))
         val c = EAR_CELL

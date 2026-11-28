@@ -389,6 +389,7 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
             overrideColor = { x, y, z, seen, t -> hairFill.override(x, y, z, seen, t) },
         ) else baker.finish()
         if (hairFill != null) improveSkin(baker, texture, hairFill)
+        if (hairFill != null && s.earOwnSkin) matchEarColour(baker, texture, hairFill)
         if (hairFill != null && (s.beard != Beard.NONE || s.continueFacialHair)) {
             progress("Facial hair", 0.86f)
             facialHair(baker, texture, hairFill)
@@ -637,6 +638,49 @@ class HeadScanPipeline(private val settings: ScanSettings = ScanSettings()) {
      * Ears get their own skin rather than the head's: a little redder and pinker (thin skin), smooth (no repeated skin
      * pattern), darker where the surface faces forward or back into the folds, lighter where it faces outward.
      */
+    /**
+     * The ears keep their own skin (grain, fold shading, slight redness) but take their overall colour from the head
+     * skin right around each ear, so they don't look stuck on in a different colour.
+     */
+    private fun matchEarColour(baker: TextureBaker, texture: IntArray, hf: HairFill) {
+        val head = hf.head
+        // [side][0..2] colour sums and weight: ring = head skin around the ear, ear = the ear's base colour.
+        val ring = Array(2) { DoubleArray(4) }; val ear = Array(2) { DoubleArray(4) }
+        val earW = FloatArray(baker.texelCount)
+        baker.mapTexelsT(texture) { t, x, y, z, _, _, _, c ->
+            val side = if (x < head.headCx) 0 else 1
+            val hair = head.hairColorAmount(x, y, z)
+            if (hair < 0.05f) {
+                val e = earAmt(head, x, y, z)
+                earW[t] = e
+                val r = ((c shr 16) and 255).toDouble(); val g = ((c shr 8) and 255).toDouble(); val b = (c and 255).toDouble()
+                if (e > 0.6f) {
+                    // Take the fold shading out, so the average is the ear's skin colour.
+                    val sh = (head.earShade(x, y, z) ?: 1f).toDouble().coerceAtLeast(0.5)
+                    val a = ear[side]; a[0] += r / sh; a[1] += g / sh; a[2] += b / sh; a[3] += 1.0
+                } else if (e < 0.01f && head.aroundEar(x, y, z)) {
+                    val a = ring[side]; a[0] += r; a[1] += g; a[2] += b; a[3] += 1.0
+                }
+            }
+            c
+        }
+        // A real ear is a touch redder than the skin beside it.
+        val warmth = floatArrayOf(1.04f, 0.99f, 0.98f)
+        val gain = Array(2) { sd ->
+            val rg = ring[sd]; val ea = ear[sd]
+            if (rg[3] < 30 || ea[3] < 30) null
+            else FloatArray(3) { k -> ((rg[k] / rg[3]) * warmth[k] / (ea[k] / ea[3]).coerceAtLeast(1.0)).toFloat().coerceIn(0.6f, 1.6f) }
+        }
+        if (gain[0] == null && gain[1] == null) return
+        baker.mapTexelsT(texture) { t, x, _, _, _, _, _, c ->
+            val e = earW[t]
+            if (e <= 0.01f) return@mapTexelsT c
+            val g = gain[if (x < head.headCx) 0 else 1] ?: gain[0] ?: gain[1]!!
+            fun ch(sh: Int, m: Float): Int { val v = ((c shr sh) and 255).toFloat(); return (v * (1f + (m - 1f) * e)).toInt().coerceIn(0, 255) }
+            (c and 0xFF000000.toInt()) or (ch(16, g[0]) shl 16) or (ch(8, g[1]) shl 8) or ch(0, g[2])
+        }
+    }
+
     private fun earSkin(baker: TextureBaker, texture: IntArray, hf: HairFill) {
         val head = hf.head
         baker.mapTexelsT(texture) { t, x, y, z, nx, _, nz, c ->
